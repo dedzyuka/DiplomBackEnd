@@ -1,0 +1,349 @@
+BEGIN;
+
+-- -----------------------------------------------------
+-- 1. Расширения
+-- -----------------------------------------------------
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+CREATE EXTENSION IF NOT EXISTS "citext";
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";  -- для триграммного поиска по именам
+
+-- -----------------------------------------------------
+-- 2. ENUM-типы
+-- -----------------------------------------------------
+CREATE TYPE chat_type AS ENUM ('private', 'group', 'channel');
+CREATE TYPE member_role AS ENUM ('owner', 'admin', 'member');
+CREATE TYPE member_status AS ENUM ('active', 'left', 'banned');
+CREATE TYPE message_type AS ENUM ('text', 'image', 'video', 'audio', 'file', 'location', 'contact', 'mixed');
+CREATE TYPE contact_status AS ENUM ('pending', 'accepted', 'rejected', 'blocked');
+CREATE TYPE account_status AS ENUM ('active', 'suspended', 'deleted');
+CREATE TYPE privacy_level AS ENUM ('everyone', 'contacts', 'nobody');
+
+-- -----------------------------------------------------
+-- 3. Пользователи
+-- -----------------------------------------------------
+CREATE TABLE users (
+    user_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    nick_name        VARCHAR(50) NOT NULL UNIQUE,
+    first_name       VARCHAR(100),
+    last_name        VARCHAR(100),
+    middle_name      VARCHAR(100),           -- отчество
+    email            CITEXT UNIQUE,
+    phone            VARCHAR(20) UNIQUE,
+    password_hash    TEXT NOT NULL,
+    salt             TEXT NOT NULL,
+    avatar_url       TEXT,
+    bio              TEXT,
+    last_seen        TIMESTAMPTZ,
+    is_online        BOOLEAN DEFAULT false,
+    status           account_status DEFAULT 'active',
+    email_verified   BOOLEAN DEFAULT false,
+    phone_verified   BOOLEAN DEFAULT false,
+    created_at       TIMESTAMPTZ DEFAULT now(),
+    updated_at       TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_phone ON users(phone);
+CREATE INDEX idx_users_nick_name ON users(nick_name);
+-- индексы для поиска по имени (триграммы)
+CREATE INDEX idx_users_first_name_trgm ON users USING gin (first_name gin_trgm_ops);
+CREATE INDEX idx_users_last_name_trgm  ON users USING gin (last_name gin_trgm_ops);
+-- составной индекс для поиска по полному имени
+CREATE INDEX idx_users_full_name ON users ((first_name || ' ' || last_name));
+
+-- -----------------------------------------------------
+-- 4. Чаты
+-- -----------------------------------------------------
+CREATE TABLE chats (
+    chat_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    chat_type    chat_type NOT NULL,
+    name         VARCHAR(100),
+    description  TEXT,
+    avatar_url   TEXT,
+    creator_id   UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    is_public    BOOLEAN DEFAULT false,
+    max_members  INT DEFAULT 200,
+    created_at   TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_chats_creator ON chats(creator_id);
+CREATE INDEX idx_chats_type ON chats(chat_type);
+
+-- -----------------------------------------------------
+-- 5. Участники чатов
+-- -----------------------------------------------------
+CREATE TABLE chat_members (
+    chat_id      UUID REFERENCES chats(chat_id) ON DELETE CASCADE,
+    user_id      UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    role         member_role DEFAULT 'member',
+    status       member_status DEFAULT 'active',
+    joined_at    TIMESTAMPTZ DEFAULT now(),
+    left_at      TIMESTAMPTZ,
+    banned_until TIMESTAMPTZ,
+    PRIMARY KEY (chat_id, user_id)
+);
+
+CREATE INDEX idx_chat_members_user ON chat_members(user_id);
+CREATE INDEX idx_chat_members_chat_status ON chat_members(chat_id, status);
+
+-- -----------------------------------------------------
+-- 6. Сообщения — партиционирование по дате
+-- -----------------------------------------------------
+CREATE TABLE messages (
+    message_id       BIGSERIAL,
+    chat_id          UUID NOT NULL REFERENCES chats(chat_id) ON DELETE CASCADE,
+    sender_id        UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    reply_to_id      BIGINT,                -- ссылка на другое сообщение (без FK, контроль приложением)
+    content          TEXT,
+    encrypted_content BYTEA,
+    type             message_type DEFAULT 'text',
+    metadata         JSONB,
+    created_at       TIMESTAMPTZ DEFAULT now(),
+    updated_at       TIMESTAMPTZ DEFAULT now(),
+    deleted_at       TIMESTAMPTZ,
+    is_edited        BOOLEAN DEFAULT false,
+    PRIMARY KEY (message_id, created_at)    -- ключ партиционирования включён в PK
+) PARTITION BY RANGE (created_at);
+
+COMMENT ON COLUMN messages.reply_to_id IS 'Ответ на сообщение, внешний ключ не ставим из-за партиц.';
+
+-- Индексы
+CREATE INDEX idx_messages_chat_created ON messages(chat_id, created_at);
+CREATE INDEX idx_messages_sender ON messages(sender_id);
+CREATE INDEX idx_messages_metadata ON messages USING gin (metadata);
+
+-- -----------------------------------------------------
+-- 7. Статусы сообщений — партиционирование по хешу user_id
+-- -----------------------------------------------------
+CREATE TABLE message_statuses (
+    message_id         BIGINT NOT NULL,
+    user_id            UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    message_created_at TIMESTAMPTZ NOT NULL,   -- дублируем created_at из messages
+    delivered_at       TIMESTAMPTZ,
+    read_at            TIMESTAMPTZ,
+    PRIMARY KEY (message_id, user_id),
+    FOREIGN KEY (message_id, message_created_at)
+        REFERENCES messages(message_id, created_at) ON DELETE CASCADE
+) PARTITION BY HASH (user_id);
+
+-- Индексы для быстрого доступа к непрочитанным и к прочитавшим
+CREATE INDEX idx_message_statuses_unread ON message_statuses(user_id, message_id)
+    WHERE read_at IS NULL;
+CREATE INDEX idx_message_statuses_read ON message_statuses(read_at) WHERE read_at IS NOT NULL;
+-- индекс для получения всех прочитавших в чате (если нужен)
+-- CREATE INDEX idx_message_statuses_chat_unread ON message_statuses(chat_id, user_id, read_at) WHERE read_at IS NULL; 
+-- (chat_id нет в этой таблице, поэтому такой индекс не построить, нужен join с messages)
+
+-- -----------------------------------------------------
+-- 8. Вложения
+-- -----------------------------------------------------
+CREATE TABLE attachments (
+    attachment_id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    message_id         BIGINT NOT NULL,
+    message_created_at TIMESTAMPTZ NOT NULL,   -- для внешнего ключа
+    file_name          TEXT NOT NULL,
+    file_size          BIGINT,
+    mime_type          VARCHAR(100),
+    storage_path       TEXT NOT NULL,
+    uploaded_at        TIMESTAMPTZ DEFAULT now(),
+    FOREIGN KEY (message_id, message_created_at)
+        REFERENCES messages(message_id, created_at) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_attachments_message ON attachments(message_id);
+
+-- -----------------------------------------------------
+-- 9. Реакции
+-- -----------------------------------------------------
+CREATE TABLE reactions (
+    message_id         BIGINT NOT NULL,
+    user_id            UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    message_created_at TIMESTAMPTZ NOT NULL,
+    emoji              VARCHAR(10) NOT NULL,
+    created_at         TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (message_id, user_id, emoji),
+    FOREIGN KEY (message_id, message_created_at)
+        REFERENCES messages(message_id, created_at) ON DELETE CASCADE
+);
+
+-- -----------------------------------------------------
+-- 10. Упоминания
+-- -----------------------------------------------------
+CREATE TABLE mentions (
+    mention_id         BIGSERIAL PRIMARY KEY,
+    message_id         BIGINT NOT NULL,
+    message_created_at TIMESTAMPTZ NOT NULL,
+    mentioned_user_id  UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    created_at         TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (message_id, mentioned_user_id),
+    FOREIGN KEY (message_id, message_created_at)
+        REFERENCES messages(message_id, created_at) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_mentions_user ON mentions(mentioned_user_id, created_at);
+CREATE INDEX idx_mentions_user_time ON mentions(mentioned_user_id, message_created_at);
+
+-- -----------------------------------------------------
+-- 11. Контакты
+-- -----------------------------------------------------
+CREATE TABLE contacts (
+    user_id         UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    contact_user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    status          contact_status DEFAULT 'pending',
+    created_at      TIMESTAMPTZ DEFAULT now(),
+    updated_at      TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (user_id, contact_user_id),
+    CHECK (user_id <> contact_user_id)
+);
+
+CREATE INDEX idx_contacts_contact_user ON contacts(contact_user_id);
+CREATE INDEX idx_contacts_status ON contacts(status);
+
+-- -----------------------------------------------------
+-- 12. Настройки приватности
+-- -----------------------------------------------------
+CREATE TABLE privacy_settings (
+    user_id                 UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+    who_can_write_me        privacy_level DEFAULT 'everyone',
+    who_can_add_to_groups   privacy_level DEFAULT 'everyone',
+    who_can_see_phone       privacy_level DEFAULT 'contacts',
+    who_can_see_last_seen   privacy_level DEFAULT 'everyone',
+    updated_at              TIMESTAMPTZ DEFAULT now()
+);
+
+-- -----------------------------------------------------
+-- 13. Справочник emoji
+-- -----------------------------------------------------
+CREATE TABLE emoji (
+    emoji_id   SERIAL PRIMARY KEY,
+    code_point TEXT UNIQUE NOT NULL,
+    character  TEXT NOT NULL,
+    name       TEXT,
+    category   TEXT,
+    keywords   TEXT[]
+);
+
+COMMENT ON TABLE emoji IS 'Справочник emoji для автодополнения и нормализации';
+CREATE INDEX idx_emoji_keywords ON emoji USING gin (keywords);
+CREATE INDEX idx_emoji_name_trgm ON emoji USING gin (name gin_trgm_ops);
+
+-- -----------------------------------------------------
+-- 14. История сессий (аудит)
+-- -----------------------------------------------------
+CREATE TABLE session_events (
+    event_id           BIGSERIAL,
+    user_id            UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    action             VARCHAR(20) NOT NULL,
+    refresh_token_hash TEXT,
+    device_info        TEXT,
+    ip_address         INET,
+    user_agent         TEXT,
+    created_at         TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (event_id, created_at)
+) PARTITION BY RANGE (created_at);
+
+CREATE INDEX idx_session_events_user_created ON session_events(user_id, created_at);
+
+-- -----------------------------------------------------
+-- 15. Логи безопасности
+-- -----------------------------------------------------
+CREATE TABLE audit_logs (
+    log_id     BIGSERIAL,
+    user_id    UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    action     VARCHAR(50) NOT NULL,
+    ip_address INET,
+    user_agent TEXT,
+    details    JSONB,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (log_id, created_at)
+) PARTITION BY RANGE (created_at);
+
+CREATE INDEX idx_audit_user_time ON audit_logs(user_id, created_at);
+CREATE INDEX idx_audit_action_time ON audit_logs(action, created_at);
+CREATE INDEX idx_audit_details ON audit_logs USING gin (details);
+
+-- -----------------------------------------------------
+-- 16. Триггеры updated_at
+-- -----------------------------------------------------
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_users_updated_at BEFORE UPDATE ON users
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER trigger_messages_updated_at BEFORE UPDATE ON messages
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER trigger_contacts_updated_at BEFORE UPDATE ON contacts
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER trigger_privacy_settings_updated_at BEFORE UPDATE ON privacy_settings
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- -----------------------------------------------------
+-- 17. Создание начальных партиций
+-- -----------------------------------------------------
+-- Сообщения — по месяцам
+CREATE TABLE messages_2026_02 PARTITION OF messages
+    FOR VALUES FROM ('2026-02-01') TO ('2026-03-01');
+CREATE TABLE messages_2026_03 PARTITION OF messages
+    FOR VALUES FROM ('2026-03-01') TO ('2026-04-01');
+
+-- Статусы сообщений — по хешу (8 партиций)
+CREATE TABLE message_statuses_0 PARTITION OF message_statuses
+    FOR VALUES WITH (MODULUS 8, REMAINDER 0);
+CREATE TABLE message_statuses_1 PARTITION OF message_statuses
+    FOR VALUES WITH (MODULUS 8, REMAINDER 1);
+CREATE TABLE message_statuses_2 PARTITION OF message_statuses
+    FOR VALUES WITH (MODULUS 8, REMAINDER 2);
+CREATE TABLE message_statuses_3 PARTITION OF message_statuses
+    FOR VALUES WITH (MODULUS 8, REMAINDER 3);
+CREATE TABLE message_statuses_4 PARTITION OF message_statuses
+    FOR VALUES WITH (MODULUS 8, REMAINDER 4);
+CREATE TABLE message_statuses_5 PARTITION OF message_statuses
+    FOR VALUES WITH (MODULUS 8, REMAINDER 5);
+CREATE TABLE message_statuses_6 PARTITION OF message_statuses
+    FOR VALUES WITH (MODULUS 8, REMAINDER 6);
+CREATE TABLE message_statuses_7 PARTITION OF message_statuses
+    FOR VALUES WITH (MODULUS 8, REMAINDER 7);
+
+-- Сессии — по месяцам
+CREATE TABLE session_events_2026_02 PARTITION OF session_events
+    FOR VALUES FROM ('2026-02-01') TO ('2026-03-01');
+CREATE TABLE session_events_2026_03 PARTITION OF session_events
+    FOR VALUES FROM ('2026-03-01') TO ('2026-04-01');
+
+-- Аудиты — по месяцам
+CREATE TABLE audit_logs_2026_02 PARTITION OF audit_logs
+    FOR VALUES FROM ('2026-02-01') TO ('2026-03-01');
+CREATE TABLE audit_logs_2026_03 PARTITION OF audit_logs
+    FOR VALUES FROM ('2026-03-01') TO ('2026-04-01');
+
+-- -----------------------------------------------------
+-- 18. Row-Level Security (кратко)
+-- -----------------------------------------------------
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chat_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE message_statuses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE contacts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE privacy_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE session_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+
+-- Пример политики для сообщений (требует установки app.current_user_id)
+-- CREATE POLICY messages_select_policy ON messages
+--     FOR SELECT USING (
+--         EXISTS (
+--             SELECT 1 FROM chat_members
+--             WHERE chat_members.chat_id = messages.chat_id
+--               AND chat_members.user_id = current_setting('app.current_user_id')::UUID
+--               AND chat_members.status = 'active'
+--         )
+--     );
+
+-- Аналогичные политики нужно создать для остальных таблиц.
+
+COMMIT;
