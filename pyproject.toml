@@ -18,6 +18,7 @@ dependencies = [
     "jwt>=1.4.0",
     "asyncpg>=0.31.0",
     "alembic>=1.13.0",
+    "strawberry-graphql>=0.296.2",
 ]
 
 [tool.uv.workspace]

@@ -1,0 +1,577 @@
+syntax = "proto3";
+
+package messenger;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+
+// ========== Enums ==========
+
+enum AccountStatus {
+  ACCOUNT_STATUS_UNSPECIFIED = 0;
+  ACTIVE = 1;
+  SUSPENDED = 2;
+  DELETED = 3;
+}
+
+enum ChatType {
+  CHAT_TYPE_UNSPECIFIED = 0;
+  PRIVATE = 1;   // direct chat (dialog)
+  GROUP = 2;      // group chat
+  CHANNEL = 3;    // broadcast channel
+}
+
+enum MemberRole {
+  MEMBER_ROLE_UNSPECIFIED = 0;
+  OWNER = 1;
+  ADMIN = 2;
+  MEMBER = 3;
+}
+
+enum MemberStatus {
+  MEMBER_STATUS_UNSPECIFIED = 0;
+  ACTIVE_N = 1;
+  LEFT = 2;
+  BANNED = 3;
+}
+
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  TEXT = 1;
+  IMAGE = 2;
+  VIDEO = 3;
+  AUDIO = 4;
+  FILE = 5;
+  VOICE = 6;
+  STICKER = 7;
+  LOCATION = 8;
+  CONTACT = 9;
+  SYSTEM = 10;
+}
+
+enum ContactStatus {
+  CONTACT_STATUS_UNSPECIFIED = 0;
+  PENDING = 1;
+  ACCEPTED = 2;
+  BLOCKED = 3;
+}
+
+enum PrivacyLevel {
+  PRIVACY_LEVEL_UNSPECIFIED = 0;
+  EVERYONE = 1;
+  CONTACTS = 2;
+  NOBODY = 3;
+}
+
+// ========== Main Messages ==========
+
+message User {
+  string user_id = 1;                // UUID
+  string nick_name = 2;
+  optional string first_name = 3;
+  optional string last_name = 4;
+  optional string middle_name = 5;
+  optional string email = 6;
+  optional string phone = 7;
+  optional string avatar_url = 8;
+  optional string bio = 9;
+  google.protobuf.Timestamp last_seen = 10;
+  bool is_online = 11;
+  AccountStatus status = 12;
+  bool email_verified = 13;
+  bool phone_verified = 14;
+  bool is_admin = 15;
+  google.protobuf.Timestamp created_at = 16;
+  google.protobuf.Timestamp updated_at = 17;
+}
+
+message PrivacySetting {
+  string user_id = 1;
+  PrivacyLevel who_can_write_me = 2;
+  PrivacyLevel who_can_add_to_groups = 3;
+  PrivacyLevel who_can_see_phone = 4;
+  PrivacyLevel who_can_see_last_seen = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+message Chat {
+  string chat_id = 1;                // UUID
+  ChatType chat_type = 2;
+  optional string name = 3;
+  optional string description = 4;
+  optional string avatar_url = 5;
+  optional string creator_id = 6;    // UUID
+  bool is_public = 7;
+  int32 max_members = 8;
+  google.protobuf.Timestamp created_at = 9;
+  optional Message last_message = 10;
+  int32 members_count = 11;
+}
+
+message ChatMember {
+  string chat_id = 1;
+  string user_id = 2;
+  MemberRole role = 3;
+  MemberStatus status = 4;
+  google.protobuf.Timestamp joined_at = 5;
+  optional google.protobuf.Timestamp left_at = 6;
+  optional google.protobuf.Timestamp banned_until = 7;
+  optional User user = 8;            // denormalized user info
+}
+
+message Message {
+  int64 message_id = 1;
+  string chat_id = 2;
+  string sender_id = 3;
+  optional int64 reply_to_id = 4;
+  optional string content = 5;
+  optional bytes encrypted_content = 6;
+  MessageType type = 7;
+  google.protobuf.Struct message_metadata = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  optional google.protobuf.Timestamp deleted_at = 11;
+  bool is_edited = 12;
+  repeated Attachment attachments = 13;
+  repeated Reaction reactions = 14;
+  repeated Mention mentions = 15;
+}
+
+message MessageStatus {
+  int64 message_id = 1;
+  string user_id = 2;
+  google.protobuf.Timestamp message_created_at = 3;
+  optional google.protobuf.Timestamp delivered_at = 4;
+  optional google.protobuf.Timestamp read_at = 5;
+}
+
+message Attachment {
+  string attachment_id = 1;          // UUID
+  int64 message_id = 2;
+  google.protobuf.Timestamp message_created_at = 3;
+  string file_name = 4;
+  optional int64 file_size = 5;
+  optional string mime_type = 6;
+  string storage_path = 7;
+  google.protobuf.Timestamp uploaded_at = 8;
+}
+
+message Reaction {
+  int64 message_id = 1;
+  string user_id = 2;
+  string emoji = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message Mention {
+  int64 mention_id = 1;
+  int64 message_id = 2;
+  string mentioned_user_id = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message Contact {
+  string user_id = 1;
+  string contact_user_id = 2;
+  ContactStatus status = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  optional User contact_user = 6;    // denormalized contact info
+}
+
+message Emoji {
+  int32 emoji_id = 1;
+  string code_point = 2;
+  string character = 3;
+  optional string name = 4;
+  optional string category = 5;
+  repeated string keywords = 6;
+}
+
+// ========== Request / Response Messages ==========
+
+// --- Users ---
+message CreateUserRequest {
+  string nick_name = 1;
+  optional string first_name = 2;
+  optional string last_name = 3;
+  optional string middle_name = 4;
+  optional string email = 5;
+  optional string phone = 6;
+  string password = 7;
+}
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message UpdateUserRequest {
+  string user_id = 1;
+  optional string nick_name = 2;
+  optional string first_name = 3;
+  optional string last_name = 4;
+  optional string middle_name = 5;
+  optional string email = 6;
+  optional string phone = 7;
+  optional string avatar_url = 8;
+  optional string bio = 9;
+}
+
+message DeleteUserRequest {
+  string user_id = 1;
+}
+
+message SearchUsersRequest {
+  string query = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message UsersListResponse {
+  repeated User users = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+// --- Privacy ---
+message UpdatePrivacyRequest {
+  string user_id = 1;
+  optional PrivacyLevel who_can_write_me = 2;
+  optional PrivacyLevel who_can_add_to_groups = 3;
+  optional PrivacyLevel who_can_see_phone = 4;
+  optional PrivacyLevel who_can_see_last_seen = 5;
+}
+
+// --- Auth ---
+message LoginRequest {
+  string login = 1;      // email, phone or nick_name
+  string password = 2;
+  optional string device_info = 3;
+  optional string ip_address = 4;
+  optional string user_agent = 5;
+}
+
+message LoginResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  int64 expires_in = 3;   // seconds
+  User user = 4;
+}
+
+message LogoutRequest {
+  string refresh_token = 1;
+}
+
+message RefreshTokenRequest {
+  string refresh_token = 1;
+}
+
+// --- Contacts ---
+message AddContactRequest {
+  string user_id = 1;
+  string contact_user_id = 2;
+}
+
+message AcceptContactRequest {
+  string user_id = 1;
+  string contact_user_id = 2;
+}
+
+message BlockContactRequest {
+  string user_id = 1;
+  string contact_user_id = 2;
+}
+
+message RemoveContactRequest {
+  string user_id = 1;
+  string contact_user_id = 2;
+}
+
+message ListContactsRequest {
+  string user_id = 1;
+  optional ContactStatus status = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ContactsListResponse {
+  repeated Contact contacts = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+// --- Chats ---
+message CreateChatRequest {
+  ChatType chat_type = 1;
+  optional string name = 2;
+  optional string description = 3;
+  optional string avatar_url = 4;
+  bool is_public = 5;
+  optional int32 max_members = 6;
+  repeated string member_ids = 7;    // for group: initial members
+}
+
+message GetChatRequest {
+  string chat_id = 1;
+}
+
+message UpdateChatRequest {
+  string chat_id = 1;
+  optional string name = 2;
+  optional string description = 3;
+  optional string avatar_url = 4;
+  optional bool is_public = 5;
+  optional int32 max_members = 6;
+}
+
+message DeleteChatRequest {
+  string chat_id = 1;
+}
+
+message ListChatsRequest {
+  string user_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ChatsListResponse {
+  repeated Chat chats = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+message AddChatMemberRequest {
+  string chat_id = 1;
+  string user_id = 2;
+  MemberRole role = 3;   // typically MEMBER
+}
+
+message UpdateChatMemberRequest {
+  string chat_id = 1;
+  string user_id = 2;
+  optional MemberRole role = 3;
+  optional MemberStatus status = 4;
+  optional google.protobuf.Timestamp banned_until = 5;
+}
+
+message RemoveChatMemberRequest {
+  string chat_id = 1;
+  string user_id = 2;
+}
+
+message ListChatMembersRequest {
+  string chat_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ChatMembersListResponse {
+  repeated ChatMember members = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+// --- Messages ---
+message AttachmentInput {
+  string file_name = 1;
+  optional int64 file_size = 2;
+  optional string mime_type = 3;
+  string storage_path = 4;   // pre‑uploaded path
+}
+
+message SendMessageRequest {
+  string chat_id = 1;
+  string sender_id = 2;          // from context
+  optional int64 reply_to_id = 3;
+  optional string content = 4;
+  optional bytes encrypted_content = 5;
+  MessageType type = 6;
+  google.protobuf.Struct message_metadata = 7;
+  repeated AttachmentInput attachments = 8;
+  repeated string mentions = 9;   // user IDs
+}
+
+message GetMessageRequest {
+  int64 message_id = 1;
+  string chat_id = 2;
+}
+
+message UpdateMessageRequest {
+  int64 message_id = 1;
+  string chat_id = 2;
+  optional string content = 3;
+  optional bytes encrypted_content = 4;
+  google.protobuf.Struct message_metadata = 5;
+}
+
+message DeleteMessageRequest {
+  int64 message_id = 1;
+  string chat_id = 2;
+}
+
+message ListMessagesRequest {
+  string chat_id = 1;
+  optional google.protobuf.Timestamp start_date = 2;
+  optional google.protobuf.Timestamp end_date = 3;
+  optional int64 around_message_id = 4;
+  int32 page_size = 5;
+  string page_token = 6;
+}
+
+message MessagesListResponse {
+  repeated Message messages = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+// --- Reactions ---
+message AddReactionRequest {
+  int64 message_id = 1;
+  string chat_id = 2;
+  string user_id = 3;
+  string emoji = 4;
+}
+
+message RemoveReactionRequest {
+  int64 message_id = 1;
+  string chat_id = 2;
+  string user_id = 3;
+  string emoji = 4;
+}
+
+// --- Message status ---
+message GetMessageStatusRequest {
+  int64 message_id = 1;
+  string chat_id = 2;
+}
+
+message MessageStatusResponse {
+  repeated MessageStatus statuses = 1;
+}
+
+// --- Streaming ---
+message StreamMessagesRequest {
+  string user_id = 1;
+  repeated string chat_ids = 2;   // subscribe to specific chats
+}
+
+message MessageEvent {
+  oneof event {
+    Message new_message = 1;
+    Message updated_message = 2;
+    Message deleted_message = 3;
+    Reaction added_reaction = 4;
+    Reaction removed_reaction = 5;
+    MessageStatus status_update = 6;
+  }
+}
+
+// --- Attachments ---
+message UploadAttachmentRequest {
+  oneof data {
+    AttachmentInput metadata = 1;
+    bytes chunk = 2;
+  }
+}
+
+message UploadAttachmentResponse {
+  string attachment_id = 1;
+  string storage_path = 2;
+}
+
+message GetAttachmentRequest {
+  string attachment_id = 1;
+}
+
+message ListAttachmentsRequest {
+  int64 message_id = 1;
+  string chat_id = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message AttachmentsListResponse {
+  repeated Attachment attachments = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+// --- Emojis ---
+message ListEmojisRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message SearchEmojisRequest {
+  string query = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message EmojisListResponse {
+  repeated Emoji emojis = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+// ========== Services ==========
+
+service UserService {
+  rpc CreateUser(CreateUserRequest) returns (User);
+  rpc GetUser(GetUserRequest) returns (User);
+  rpc UpdateUser(UpdateUserRequest) returns (User);
+  rpc DeleteUser(DeleteUserRequest) returns (google.protobuf.Empty);
+  rpc SearchUsers(SearchUsersRequest) returns (UsersListResponse);
+  rpc GetMyProfile(google.protobuf.Empty) returns (User);
+  rpc UpdatePrivacy(UpdatePrivacyRequest) returns (PrivacySetting);
+}
+
+service AuthService {
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc Logout(LogoutRequest) returns (google.protobuf.Empty);
+  rpc RefreshToken(RefreshTokenRequest) returns (LoginResponse);
+}
+
+service ContactService {
+  rpc AddContact(AddContactRequest) returns (Contact);
+  rpc AcceptContact(AcceptContactRequest) returns (Contact);
+  rpc BlockContact(BlockContactRequest) returns (Contact);
+  rpc RemoveContact(RemoveContactRequest) returns (google.protobuf.Empty);
+  rpc ListContacts(ListContactsRequest) returns (ContactsListResponse);
+}
+
+service ChatService {
+  rpc CreateChat(CreateChatRequest) returns (Chat);
+  rpc GetChat(GetChatRequest) returns (Chat);
+  rpc UpdateChat(UpdateChatRequest) returns (Chat);
+  rpc DeleteChat(DeleteChatRequest) returns (google.protobuf.Empty);
+  rpc ListChats(ListChatsRequest) returns (ChatsListResponse);
+  rpc AddChatMember(AddChatMemberRequest) returns (ChatMember);
+  rpc UpdateChatMember(UpdateChatMemberRequest) returns (ChatMember);
+  rpc RemoveChatMember(RemoveChatMemberRequest) returns (google.protobuf.Empty);
+  rpc ListChatMembers(ListChatMembersRequest) returns (ChatMembersListResponse);
+}
+
+service MessageService {
+  rpc SendMessage(SendMessageRequest) returns (Message);
+  rpc GetMessage(GetMessageRequest) returns (Message);
+  rpc UpdateMessage(UpdateMessageRequest) returns (Message);
+  rpc DeleteMessage(DeleteMessageRequest) returns (google.protobuf.Empty);
+  rpc ListMessages(ListMessagesRequest) returns (MessagesListResponse);
+  rpc AddReaction(AddReactionRequest) returns (Reaction);
+  rpc RemoveReaction(RemoveReactionRequest) returns (google.protobuf.Empty);
+  rpc GetMessageStatus(GetMessageStatusRequest) returns (MessageStatusResponse);
+  rpc StreamMessages(StreamMessagesRequest) returns (stream MessageEvent);
+}
+
+service AttachmentService {
+  rpc UploadAttachment(stream UploadAttachmentRequest) returns (UploadAttachmentResponse);
+  rpc GetAttachment(GetAttachmentRequest) returns (Attachment);
+  rpc ListAttachments(ListAttachmentsRequest) returns (AttachmentsListResponse);
+}
+
+service EmojiService {
+  rpc ListEmojis(ListEmojisRequest) returns (EmojisListResponse);
+  rpc SearchEmojis(SearchEmojisRequest) returns (EmojisListResponse);
+}

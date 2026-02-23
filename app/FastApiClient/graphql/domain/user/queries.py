@@ -1,0 +1,33 @@
+import strawberry
+from typing import List, Optional
+from FastApiClient.graphql.context import GraphQLContext
+from FastApiClient.utils.converter import from_grpc_user
+from .types import User
+
+@strawberry.type
+class UserQueries:
+    @strawberry.field
+    async def get(self, id: int, info: strawberry.Info[GraphQLContext]) -> Optional[User]:
+        """Получить пользователя по ID."""
+        try:
+            grpc_user = info.context.user_client.get_user(id)
+            return from_grpc_user(grpc_user)
+        except ValueError:
+            # пользователь не найден
+            return None
+
+    @strawberry.field
+    async def search(self, query: str, page: int = 1, *, info: strawberry.Info[GraphQLContext]) -> List[User]:
+        """Поиск пользователей по имени."""
+        response = info.context.user_client.search_users(query, page)
+        return [from_grpc_user(u) for u in response.users]
+
+    @strawberry.field
+    async def my_profile(self, info: strawberry.Info[GraphQLContext]) -> Optional[User]:
+        """Получить профиль текущего пользователя (требует аутентификации)."""
+        # В реальном проекте нужно проверить info.context.current_user_id
+        try:
+            grpc_user = info.context.user_client.get_my_profile()
+            return from_grpc_user(grpc_user)
+        except Exception:
+            return None
