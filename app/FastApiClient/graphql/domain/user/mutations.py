@@ -22,23 +22,22 @@ class UserMutations:
         return from_grpc_user(grpc_user)
     
     def _assert_owner(
-        self,
-        context: GraphQLContext,
-        target_user_id: str,
-        operation: str,
-    ) -> None:
-        """
-        Strict auth policy for user profile mutations.
+            self,
+            context: GraphQLContext,
+            target_user_id: str,
+            operation: str,
+        ) -> None:
+            """
+            Strict auth policy for user profile mutations.
 
-        - request must be authenticated
-        - only owner can mutate own profile
-        """
-        if not context.current_user_id:
-            raise PermissionError(f"Authorization required for {operation}")
+            - request must be authenticated
+            - only owner can mutate own profile
+            """
+            if not context.current_user_id:
+                raise PermissionError(f"Authorization required for {operation}")
 
-        if context.current_user_id != target_user_id:
-            raise PermissionError(f"You can {operation} only your own profile")
-
+            if context.current_user_id != target_user_id:
+                raise PermissionError(f"You can {operation} only your own profile")
 
     @strawberry.mutation
     async def update(

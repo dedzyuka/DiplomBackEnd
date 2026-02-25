@@ -18,14 +18,38 @@ class RedisClient:
     async def close(self) -> None:
         await self._redis.aclose()
 
-    async def set_refresh_token(self, user_id: str, refresh_token: str, ttl_seconds: int) -> None:
-        await self._redis.set(self._key("auth", "refresh", user_id), refresh_token, ex=max(1, ttl_seconds))
+    async def set_session_tokens(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        refresh_token: str,
+        access_token: str,
+        ttl_seconds: int,
+    ) -> None:
+        session_key = self._key("auth", "session", session_id)
+        await self._redis.hset(
+            session_key,
+            mapping={
+                "user_id": user_id,
+                "refresh_token": refresh_token,
+                "access_token": access_token,
+            },
+        )
+        await self._redis.expire(session_key, max(1, ttl_seconds))
+        await self._redis.sadd(self._key("auth", "user_sessions", user_id), session_id)
 
-    async def get_refresh_token(self, user_id: str) -> Optional[str]:
-        return await self._redis.get(self._key("auth", "refresh", user_id))
+    async def get_session_tokens(self, session_id: str) -> Optional[dict[str, str]]:
+        session_key = self._key("auth", "session", session_id)
+        data = await self._redis.hgetall(session_key)
+        return data or None
 
-    async def delete_refresh_token(self, user_id: str) -> None:
-        await self._redis.delete(self._key("auth", "refresh", user_id))
+    async def delete_session(self, session_id: str) -> None:
+        session_key = self._key("auth", "session", session_id)
+        user_id = await self._redis.hget(session_key, "user_id")
+        await self._redis.delete(session_key)
+        if user_id:
+            await self._redis.srem(self._key("auth", "user_sessions", user_id), session_id)
 
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")

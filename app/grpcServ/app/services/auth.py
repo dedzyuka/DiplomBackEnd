@@ -1,3 +1,4 @@
+import hashlib
 import os
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -12,7 +13,7 @@ from protobuf import mess_pb2, mess_pb2_grpc
 from services.redis_client import redis_client
 from security.NewPass import CreatePass
 from services.converters.userConverter import db_user_to_proto
-from services.models import User
+from services.models import User,SessionEvent
 
 
 class AuthServicer(mess_pb2_grpc.AuthServiceServicer):
@@ -24,10 +25,11 @@ class AuthServicer(mess_pb2_grpc.AuthServiceServicer):
         self.issuer = os.getenv("JWT_ISSUER", "messenger-backend")
         self.audience = os.getenv("JWT_AUDIENCE", "messenger-clients")
 
-    def _encode_token(self, sub: str, token_type: str, expires_at: datetime) -> str:
+    def _encode_token(self, sub: str, token_type: str, expires_at: datetime, session_id: str) -> str:
         now = datetime.now(timezone.utc)
         payload = {
             "sub": sub,
+            "sid": session_id,
             "iss": self.issuer,
             "aud": self.audience,
             "iat": int(now.timestamp()),
@@ -38,13 +40,69 @@ class AuthServicer(mess_pb2_grpc.AuthServiceServicer):
         }
         return jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
 
-    def _new_access(self, user_id: str) -> str:
+    def _new_access(self, user_id: str, session_id: str) -> str:
         expire = datetime.now(timezone.utc) + timedelta(minutes=self.access_ttl_minutes)
-        return self._encode_token(user_id, "access", expire)
+        return self._encode_token(user_id, "access", expire, session_id)
 
-    def _new_refresh(self, user_id: str) -> str:
+    def _new_refresh(self, user_id: str, session_id:str) -> str:
         expire = datetime.now(timezone.utc) + timedelta(days=self.refresh_ttl_days)
-        return self._encode_token(user_id, "refresh", expire)
+        return self._encode_token(user_id, "refresh", expire, session_id)
+    
+    async def _decode_token_or_abort(self, token: str, expected_type: str, context) -> dict:
+        try:
+            payload = jwt.decode(
+                token,
+                self.secret_key,
+                algorithms=[self.algorithm],
+                audience=self.audience,
+                issuer=self.issuer,
+            )
+        except Exception:
+            await context.abort(grpc.StatusCode.UNAUTHENTICATED, f"Invalid {expected_type} token")
+
+        if payload.get("type") != expected_type:
+            await context.abort(grpc.StatusCode.UNAUTHENTICATED, f"Invalid {expected_type} token type")
+        
+        return payload
+    
+    def _extract_request_meta(self, context) -> tuple[str | None, str | None, str | None]:
+        ip_address = None
+        peer = context.peer() if context else None
+        if peer:
+            ip_address = peer.split(":")[-1]
+
+        user_agent = None
+        device_info = None
+        metadata = context.invocation_metadata() if context else None
+        if metadata:
+            for item in metadata:
+                key = (item.key or "").lower()
+                if key in {"user-agent", "x-user-agent"}:
+                    user_agent = item.value
+                if key in {"x-device", "x-device-info"}:
+                    device_info = item.value
+
+        return ip_address, user_agent, device_info
+
+    async def _log_session_event(self, *, user_id: str, action: str, refresh_token: str | None, context) -> None:
+        refresh_token_hash = None
+        if refresh_token:
+            refresh_token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+
+        ip_address, user_agent, device_info = self._extract_request_meta(context)
+
+        async with AsyncSessionLocal() as audit_session:
+            audit_session.add(
+                SessionEvent(
+                    user_id=user_id,
+                    action=action,
+                    refresh_token_hash=refresh_token_hash,
+                    device_info=device_info,
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                )
+            )
+            await audit_session.commit()
 
     async def Login(self, request, context):
         async with AsyncSessionLocal() as session:
@@ -65,13 +123,24 @@ class AuthServicer(mess_pb2_grpc.AuthServiceServicer):
                 await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid credentials")
 
             user_id = str(user.user_id)
-            access_token = self._new_access(user_id)
-            refresh_token = self._new_refresh(user_id)
-            await redis_client.set_refresh_token(
+            session_id = str(uuid4())
+            access_token = self._new_access(user_id, session_id)
+            refresh_token = self._new_refresh(user_id, session_id)
+            await redis_client.set_session_tokens(
+                session_id=session_id,
                 user_id=user_id,
                 refresh_token=refresh_token,
+                access_token=access_token,
                 ttl_seconds=self.refresh_ttl_days * 24 * 60 * 60,
             )
+
+            await self._log_session_event(
+                user_id=user_id,
+                action="login",
+                refresh_token=refresh_token,
+                context=context,
+            )
+
 
             return mess_pb2.LoginResponse(
                 access_token=access_token,
@@ -82,26 +151,21 @@ class AuthServicer(mess_pb2_grpc.AuthServiceServicer):
 
     async def RefreshToken(self, request, context):
         refresh_token = request.refresh_token
-        try:
-            payload = jwt.decode(
-                refresh_token,
-                self.secret_key,
-                algorithms=[self.algorithm],
-                audience=self.audience,
-                issuer=self.issuer,
-            )
-        except Exception:
-            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid refresh token")
+        payload = await self._decode_token_or_abort(refresh_token, expected_type="refresh", context=context)
 
-        if payload.get("type") != "refresh":
-            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid refresh token type")
+        user_id = payload["sub"]
+        session_id = payload["sid"]
 
         user_id = payload.get("sub")
-        if not user_id:
-            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid refresh token payload")
+        
+        stored_session = await redis_client.get_session_tokens(session_id)
+        if not stored_session:
+            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Session not found or revoked")
 
-        stored_refresh = await redis_client.get_refresh_token(user_id)
-        if stored_refresh != refresh_token:
+        if stored_session.get("user_id") != user_id:
+            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Session user mismatch")
+
+        if stored_session.get("refresh_token") != refresh_token:
             await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Refresh token revoked")
 
         async with AsyncSessionLocal() as session:
@@ -109,17 +173,24 @@ class AuthServicer(mess_pb2_grpc.AuthServiceServicer):
             if not user:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "User not found")
 
-            new_access = self._new_access(user_id)
-            new_refresh = self._new_refresh(user_id)
-            await redis_client.set_refresh_token(
+            new_access = self._new_access(user_id, session_id)
+            await redis_client.set_session_tokens(
+                session_id=session_id,
                 user_id=user_id,
-                refresh_token=new_refresh,
+                refresh_token=refresh_token,
+                access_token=new_access,
                 ttl_seconds=self.refresh_ttl_days * 24 * 60 * 60,
+            )
+            await self._log_session_event(
+                user_id=user_id,
+                action="refresh",
+                refresh_token=refresh_token,
+                context=context,
             )
 
             return mess_pb2.LoginResponse(
                 access_token=new_access,
-                refresh_token=new_refresh,
+                refresh_token=refresh_token,
                 expires_in=self.access_ttl_minutes * 60,
                 user=db_user_to_proto(user),
             )
@@ -127,20 +198,20 @@ class AuthServicer(mess_pb2_grpc.AuthServiceServicer):
     async def Logout(self, request, context):
         refresh_token = request.refresh_token
         try:
-            payload = jwt.decode(
-                refresh_token,
-                self.secret_key,
-                algorithms=[self.algorithm],
-                audience=self.audience,
-                issuer=self.issuer,
-            )
+            payload = await self._decode_token_or_abort(refresh_token, expected_type="refresh", context=context)
         except Exception:
             return Empty()
 
-        user_id = payload.get("sub")
-        if user_id:
-            stored_refresh = await redis_client.get_refresh_token(user_id)
-            if stored_refresh == refresh_token:
-                await redis_client.delete_refresh_token(user_id)
+        session_id = payload.get("sid")
+        if session_id:
+            stored_session = await redis_client.get_session_tokens(session_id)
+            if stored_session and stored_session.get("refresh_token") == refresh_token:
+                await redis_client.delete_session(session_id)
+                await self._log_session_event(
+                    user_id=payload.get("sub"),
+                    action="logout",
+                    refresh_token=refresh_token,
+                    context=context,
+                )
 
         return Empty()

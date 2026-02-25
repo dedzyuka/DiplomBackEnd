@@ -14,7 +14,6 @@ class AuthTokens:
 class AuthPayload:
     tokens: AuthTokens
     user: User
-    user: User
 
     @strawberry.field
     def access_token(self) -> str:
