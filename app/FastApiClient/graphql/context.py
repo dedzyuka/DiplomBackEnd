@@ -25,6 +25,26 @@ class GraphQLContext(BaseContext):
         self.access_token = access_token
 
 
+def _normalize_token(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    token = raw.strip().strip('"').strip("'")
+    return token or None
+
+
+def _strip_known_prefixes(raw_token: Optional[str]) -> Optional[str]:
+    token = _normalize_token(raw_token)
+    if not token:
+        return None
+
+    # handle values like: "Bearer <jwt>", "JWT <jwt>", "Token <jwt>", "Bearer:<jwt>"
+    lower = token.lower()
+    for prefix in ("bearer", "jwt", "token"):
+        if lower.startswith(prefix):
+            rest = token[len(prefix) :].lstrip(" :\t")
+            return _normalize_token(rest)
+
+    return token
 
 
 def _extract_sub_unverified(token: str) -> Optional[str]:
@@ -42,6 +62,7 @@ def _extract_sub_unverified(token: str) -> Optional[str]:
     sub = payload.get("sub")
     return str(sub) if sub else None
 
+
 def _extract_sub_untrusted_claims(token: str) -> Optional[str]:
     """Last-resort dev fallback when signature secret mismatches across services."""
     try:
@@ -52,21 +73,25 @@ def _extract_sub_untrusted_claims(token: str) -> Optional[str]:
     sub = claims.get("sub")
     return str(sub) if sub else None
 
-def _extract_bearer_token(request: Request) -> Optional[str]:
-    auth_header = request.headers.get("Authorization")
-    if auth_header:
-        normalized = auth_header.strip()
-        lower = normalized.lower()
-        if lower.startswith("bearer "):
-            token = normalized[7:].strip()
-            if token:
-                return token
-        if normalized:
-            return normalized
 
-    cookie_token = request.cookies.get("access_token")
-    if cookie_token:
-        return cookie_token.strip()
+def _extract_bearer_token(request: Request) -> Optional[str]:
+    auth_header = _strip_known_prefixes(request.headers.get("Authorization"))
+    if auth_header:
+        return auth_header
+
+    for header_name in ("X-Access-Token", "X-Auth-Token", "Token"):
+        candidate = _strip_known_prefixes(request.headers.get(header_name))
+        if candidate:
+            return candidate
+
+    for cookie_name in ("access_token", "accessToken", "token"):
+        cookie_token = _strip_known_prefixes(request.cookies.get(cookie_name))
+        if cookie_token:
+            return cookie_token
+
+    query_token = _strip_known_prefixes(request.query_params.get("access_token"))
+    if query_token:
+        return query_token
 
     return None
 
@@ -90,9 +115,9 @@ async def get_context(request: Request) -> GraphQLContext:
                 current_user_id = _extract_sub_untrusted_claims(token)
 
     if not current_user_id:
-        forwarded_user_id = request.headers.get("X-User-Id")
+        forwarded_user_id = _normalize_token(request.headers.get("X-User-Id"))
         if forwarded_user_id:
-            current_user_id = forwarded_user_id.strip()
+            current_user_id = forwarded_user_id
 
     return GraphQLContext(
         request=request,

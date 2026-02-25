@@ -21,20 +21,24 @@ class UserMutations:
         grpc_user = info.context.user_client.create_user(nick_name, email, password, phone)
         return from_grpc_user(grpc_user)
     
-    def _assert_owner_if_authenticated(
+    def _assert_owner(
         self,
         context: GraphQLContext,
         target_user_id: str,
         operation: str,
     ) -> None:
         """
-        Backward-compatible auth policy for user mutations.
+        Strict auth policy for user profile mutations.
 
-        - unauthenticated requests: allowed (legacy behavior)
-        - authenticated requests: only owner can mutate own profile
+        - request must be authenticated
+        - only owner can mutate own profile
         """
-        if context.current_user_id and context.current_user_id != target_user_id:
+        if not context.current_user_id:
+            raise PermissionError(f"Authorization required for {operation}")
+
+        if context.current_user_id != target_user_id:
             raise PermissionError(f"You can {operation} only your own profile")
+
 
     @strawberry.mutation
     async def update(
@@ -50,7 +54,7 @@ class UserMutations:
         avatar_url: Optional[str] = None,
         bio: Optional[str] = None,
     ) -> Optional[User]:
-        self._assert_owner_if_authenticated(info.context, user_id, "update")
+        self._assert_owner(info.context, user_id, "update")
         print(info.context.current_user_id)
         
 
@@ -70,7 +74,7 @@ class UserMutations:
 
     @strawberry.mutation
     async def delete(self, id: str, info: strawberry.Info[GraphQLContext]) -> bool:
-        self._assert_owner_if_authenticated(info.context, id, "delete")
+        self._assert_owner(info.context, id, "delete")
         
 
         info.context.user_client.delete_user(id, access_token=info.context.access_token)
