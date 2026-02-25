@@ -42,7 +42,7 @@ def create_refresh_token(data: dict) -> str:
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 
-def verify_token(token: str, token_type: str = "access") -> Optional[Dict]:
+def verify_token(token: str, token_type: Optional[str] = "access") -> Optional[Dict]:
     try:
         payload = jwt.decode(
             token,
@@ -51,7 +51,7 @@ def verify_token(token: str, token_type: str = "access") -> Optional[Dict]:
             audience=settings.JWT_AUDIENCE,
             issuer=settings.JWT_ISSUER,
         )
-        if payload.get("type") != token_type:
+        if token_type and payload.get("type") != token_type:
             return None
         if not payload.get("sub"):
             return None

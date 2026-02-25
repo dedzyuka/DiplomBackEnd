@@ -65,24 +65,39 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "user_id is required")
 
         update_data = {}
-        if request.HasField("nick_name") and request.nick_name:
+        if request.nick_name:
             update_data["nick_name"] = request.nick_name
-        if request.HasField("bio") and request.bio:
+        if request.first_name:
+            update_data["first_name"] = request.first_name
+        if request.last_name:
+            update_data["last_name"] = request.last_name
+        if request.middle_name:
+            update_data["middle_name"] = request.middle_name
+        if request.email:
+            update_data["email"] = request.email
+        if request.phone:
+            update_data["phone"] = request.phone
+        if request.avatar_url:
+            update_data["avatar_url"] = request.avatar_url
+        if request.bio:
             update_data["bio"] = request.bio
 
         async with AsyncSessionLocal() as session:
-            if not update_data:
-                user = await session.get(User, user_id)
-                if not user:
-                    await context.abort(grpc.StatusCode.NOT_FOUND, "User not found")
-                return db_user_to_proto(user)
-
             try:
+                if not update_data:
+                    user = await session.get(User, user_id)
+                    if not user:
+                        await context.abort(grpc.StatusCode.NOT_FOUND, "User not found")
+                    return db_user_to_proto(user)
+
                 stmt = update(User).where(User.user_id == user_id).values(**update_data).returning(User)
                 result = await session.execute(stmt)
                 updated_user = result.scalar_one_or_none()
                 if not updated_user:
-                    return db_user_to_proto(updated_user)
+                    await context.abort(grpc.StatusCode.NOT_FOUND, "User not found")
+
+                await session.commit()
+                return db_user_to_proto(updated_user)
             except Exception as e:
                 await session.rollback()
                 await context.abort(grpc.StatusCode.INTERNAL, f"UpdateUser failed: {e}")

@@ -11,6 +11,12 @@ class UserGrpcClient(BaseGrpcClient):
         super().__init__(settings.USER_GRPC_SERVER)
         self.stub = mess_pb2_grpc.UserServiceStub(self.channel)
 
+    @staticmethod
+    def _auth_metadata(access_token: str | None):
+        if access_token:
+            return (("authorization", f"Bearer {access_token}"),)
+        return None
+
     def get_user(self, user_id: str) -> mess_pb2.User:
         request = mess_pb2.GetUserRequest(user_id=str(user_id))
         try:
@@ -27,10 +33,14 @@ class UserGrpcClient(BaseGrpcClient):
         except grpc.RpcError as e:
             self._handle_rpc_error(e)
 
-    def get_my_profile(self) -> mess_pb2.User:
+    def get_my_profile(self, access_token: str | None = None) -> mess_pb2.User:
         request = mess_pb2.Empty()
         try:
-            return self.stub.GetMyProfile(request, timeout=5)
+            return self.stub.GetMyProfile(
+                request,
+                timeout=5,
+                metadata=self._auth_metadata(access_token),
+            )
         except grpc.RpcError as e:
             self._handle_rpc_error(e)
 
@@ -57,6 +67,7 @@ class UserGrpcClient(BaseGrpcClient):
         phone: str,
         avatar_url: str,
         bio: str,
+        access_token: str | None = None,
     ) -> mess_pb2.User:
         request = mess_pb2.UpdateUserRequest(
             user_id=str(user_id),
@@ -70,18 +81,26 @@ class UserGrpcClient(BaseGrpcClient):
             bio=bio or "",
         )
         try:
-            return self.stub.UpdateUser(request, timeout=5)
+            return self.stub.UpdateUser(
+                request,
+                timeout=5,
+                metadata=self._auth_metadata(access_token),
+            )
         except grpc.RpcError as e:
             self._handle_rpc_error(e)
 
-    def delete_user(self, user_id: str) -> None:
+    def delete_user(self, user_id: str, access_token: str | None = None) -> None:
         request = mess_pb2.DeleteUserRequest(user_id=str(user_id))
         try:
-            self.stub.DeleteUser(request, timeout=5)
+            self.stub.DeleteUser(
+                request,
+                timeout=5,
+                metadata=self._auth_metadata(access_token),
+            )
         except grpc.RpcError as e:
             self._handle_rpc_error(e)
 
-    def update_privacy(self, user_id: str, setting: str) -> mess_pb2.PrivacySetting:
+    def update_privacy(self, user_id: str, setting: str, access_token: str | None = None) -> mess_pb2.PrivacySetting:
         level_map = {
             "everyone": mess_pb2.PrivacyLevel.EVERYONE,
             "contacts": mess_pb2.PrivacyLevel.CONTACTS,
@@ -90,6 +109,10 @@ class UserGrpcClient(BaseGrpcClient):
         level = level_map.get(setting.lower(), mess_pb2.PrivacyLevel.PRIVACY_LEVEL_UNSPECIFIED)
         request = mess_pb2.UpdatePrivacyRequest(user_id=str(user_id), who_can_write_me=level)
         try:
-            return self.stub.UpdatePrivacy(request, timeout=5)
+            return self.stub.UpdatePrivacy(
+                request,
+                timeout=5,
+                metadata=self._auth_metadata(access_token),
+            )
         except grpc.RpcError as e:
             self._handle_rpc_error(e)
