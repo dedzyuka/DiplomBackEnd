@@ -18,8 +18,8 @@ enum AccountStatus {
 enum ChatType {
   CHAT_TYPE_UNSPECIFIED = 0;
   PRIVATE = 1;   // direct chat (dialog)
-  GROUP = 2;      // group chat
-  CHANNEL = 3;    // broadcast channel
+  GROUP = 2;     // group chat
+  CHANNEL = 3;   // broadcast channel
 }
 
 enum MemberRole {
@@ -62,6 +62,21 @@ enum PrivacyLevel {
   EVERYONE = 1;
   CONTACTS = 2;
   NOBODY = 3;
+}
+
+// ======== Chat additions (non-breaking) ========
+
+enum ChatVisibility {
+  CHAT_VISIBILITY_UNSPECIFIED = 0;
+  VISIBILITY_PRIVATE = 1; // invite-only / direct
+  VISIBILITY_PUBLIC = 2;  // discoverable / open
+}
+
+enum JoinPolicy {
+  JOIN_POLICY_UNSPECIFIED = 0;
+  JOIN_INVITE_ONLY = 1;
+  JOIN_REQUEST_APPROVAL = 2; // request-to-join
+  JOIN_OPEN = 3;             // anyone can join
 }
 
 // ========== Main Messages ==========
@@ -107,6 +122,13 @@ message Chat {
   google.protobuf.Timestamp created_at = 9;
   optional Message last_message = 10;
   int32 members_count = 11;
+
+  // --- chat-only extensions (add-only, non-breaking) ---
+  google.protobuf.Timestamp updated_at = 12;
+  google.protobuf.Timestamp last_activity_at = 13;
+  ChatVisibility visibility = 14;
+  JoinPolicy join_policy = 15;
+  optional MessagePreview last_message_preview = 16;
 }
 
 message ChatMember {
@@ -187,6 +209,43 @@ message Emoji {
   optional string name = 4;
   optional string category = 5;
   repeated string keywords = 6;
+}
+
+// ======== Chat additions (summaries for UI/GraphQL) ========
+
+message MessagePreview {
+  int64 message_id = 1;
+  string sender_id = 2;
+  MessageType type = 3;
+  optional string text_preview = 4; // truncated text / placeholder
+  google.protobuf.Timestamp created_at = 5;
+  bool is_deleted = 6;
+}
+
+message ChatCounters {
+  int32 unread_count = 1;
+  optional int64 last_read_message_id = 2;
+  bool has_mentions = 3;
+}
+
+message ChatSummary {
+  string chat_id = 1;
+  ChatType chat_type = 2;
+  string title = 3; // computed display title (works for PRIVATE too)
+  optional string avatar_url = 4;
+
+  ChatVisibility visibility = 5;
+  JoinPolicy join_policy = 6;
+
+  int32 members_count = 7;
+  google.protobuf.Timestamp last_activity_at = 8;
+  optional MessagePreview last_message = 9;
+
+  ChatCounters counters = 10; // per-user
+  MemberRole my_role = 11;
+
+  bool is_muted = 12;
+  bool is_archived = 13;
 }
 
 // ========== Request / Response Messages ==========
@@ -310,6 +369,9 @@ message CreateChatRequest {
   bool is_public = 5;
   optional int32 max_members = 6;
   repeated string member_ids = 7;    // for group: initial members
+
+  // chat-only extension: idempotency for retries
+  optional string client_request_id = 100; // UUID
 }
 
 message GetChatRequest {
@@ -345,6 +407,9 @@ message AddChatMemberRequest {
   string chat_id = 1;
   string user_id = 2;
   MemberRole role = 3;   // typically MEMBER
+
+  // chat-only extension: idempotency for retries
+  optional string client_request_id = 100; // UUID
 }
 
 message UpdateChatMemberRequest {
@@ -372,12 +437,71 @@ message ChatMembersListResponse {
   int32 total_count = 3;
 }
 
+// --- Chats (V2, chat-only additions for GraphQL/UI efficiency) ---
+message ListChatsRequestV2 {
+  string user_id = 1;
+
+  repeated ChatType chat_types = 2; // optional filter
+  optional bool archived = 3;
+  optional google.protobuf.Timestamp updated_after = 4;
+
+  int32 page_size = 5;
+  string page_token = 6;
+
+  bool include_last_message = 7;
+  bool include_counters = 8;
+}
+
+message ChatsListResponseV2 {
+  repeated ChatSummary chats = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+message BatchGetChatsRequest {
+  repeated string chat_ids = 1;
+  bool include_last_message = 2;
+  bool include_counters = 3;
+}
+
+message BatchGetChatsResponse {
+  repeated ChatSummary chats = 1;
+}
+
+// --- Membership actions (explicit, chat-only additions) ---
+message JoinChatRequest {
+  string chat_id = 1;
+  string user_id = 2;
+  optional string invite_token = 3;
+}
+
+message LeaveChatRequest {
+  string chat_id = 1;
+  string user_id = 2;
+}
+
+message KickMemberRequest {
+  string chat_id = 1;
+  string user_id = 2; // target
+}
+
+message BanMemberRequest {
+  string chat_id = 1;
+  string user_id = 2; // target
+  optional google.protobuf.Timestamp banned_until = 3;
+}
+
+message UnbanMemberRequest {
+  string chat_id = 1;
+  string user_id = 2; // target
+}
+
 // --- Messages ---
 message AttachmentInput {
   string file_name = 1;
   optional int64 file_size = 2;
   optional string mime_type = 3;
-  string storage_path = 4;   // pre‑uploaded path
+  string storage_path = 4;   // pre-uploaded path
 }
 
 message SendMessageRequest {
@@ -551,6 +675,16 @@ service ChatService {
   rpc UpdateChatMember(UpdateChatMemberRequest) returns (ChatMember);
   rpc RemoveChatMember(RemoveChatMemberRequest) returns (google.protobuf.Empty);
   rpc ListChatMembers(ListChatMembersRequest) returns (ChatMembersListResponse);
+
+  // --- chat-only additions (non-breaking) ---
+  rpc ListChatsV2(ListChatsRequestV2) returns (ChatsListResponseV2);
+  rpc BatchGetChats(BatchGetChatsRequest) returns (BatchGetChatsResponse);
+
+  rpc JoinChat(JoinChatRequest) returns (ChatMember);
+  rpc LeaveChat(LeaveChatRequest) returns (google.protobuf.Empty);
+  rpc KickMember(KickMemberRequest) returns (google.protobuf.Empty);
+  rpc BanMember(BanMemberRequest) returns (google.protobuf.Empty);
+  rpc UnbanMember(UnbanMemberRequest) returns (google.protobuf.Empty);
 }
 
 service MessageService {

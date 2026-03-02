@@ -6,7 +6,7 @@ from strawberry.fastapi import BaseContext
 
 from FastApiClient.core.config import settings
 from FastApiClient.core.security import verify_token
-from FastApiClient.grpc_clients import auth_client, user_client
+from FastApiClient.grpc_clients import auth_client, user_client, chat_client  # ✅ добавили chat_client
 
 
 class GraphQLContext(BaseContext):
@@ -15,12 +15,14 @@ class GraphQLContext(BaseContext):
         request: Request,
         user_client,
         auth_client,
+        chat_client,  # ✅ есть в сигнатуре
         current_user_id: Optional[str] = None,
         access_token: Optional[str] = None,
     ):
         self.request = request
         self.user_client = user_client
         self.auth_client = auth_client
+        self.chat_client = chat_client  # ✅ сохраняем
         self.current_user_id = current_user_id
         self.access_token = access_token
 
@@ -37,11 +39,10 @@ def _strip_known_prefixes(raw_token: Optional[str]) -> Optional[str]:
     if not token:
         return None
 
-    # handle values like: "Bearer <jwt>", "JWT <jwt>", "Token <jwt>", "Bearer:<jwt>"
     lower = token.lower()
     for prefix in ("bearer", "jwt", "token"):
         if lower.startswith(prefix):
-            rest = token[len(prefix) :].lstrip(" :\t")
+            rest = token[len(prefix):].lstrip(" :\t")
             return _normalize_token(rest)
 
     return token
@@ -103,15 +104,13 @@ async def get_context(request: Request) -> GraphQLContext:
     if token:
         payload = verify_token(token, token_type="access")
         if not payload:
-            # backward compatibility: accept legacy tokens without `type`
             payload = verify_token(token, token_type=None)
+
         if payload:
             current_user_id = payload.get("sub")
         else:
-            # fallback: same secret/signature but mismatched aud/iss in environments
             current_user_id = _extract_sub_unverified(token)
             if not current_user_id:
-                # final dev fallback for environments with different signing secrets
                 current_user_id = _extract_sub_untrusted_claims(token)
 
     if not current_user_id:
@@ -123,6 +122,7 @@ async def get_context(request: Request) -> GraphQLContext:
         request=request,
         user_client=user_client,
         auth_client=auth_client,
+        chat_client=chat_client,  # ✅ вот этого не хватало
         current_user_id=current_user_id,
         access_token=token,
     )

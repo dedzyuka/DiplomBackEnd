@@ -8,7 +8,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime
 import uuid
-from ..grpcServ.app.database import Base
+
+from FastApiClient.database import Base
+
 from .enums import (
     ChatType, MemberRole, MemberStatus, MessageType,
     ContactStatus, AccountStatus, PrivacyLevel
