@@ -38,6 +38,7 @@ class ChatMutations:
                 member_ids=member_ids,
                 max_members=max_members,
                 access_token=info.context.access_token,
+                current_user_id=info.context.current_user_id,
             )
 
         grpc_chat = await anyio.to_thread.run_sync(_call_grpc)

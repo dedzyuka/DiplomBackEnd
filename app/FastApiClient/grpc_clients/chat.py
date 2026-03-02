@@ -8,14 +8,17 @@ from .base import BaseGrpcClient
 
 class ChatGrpcClient(BaseGrpcClient):
     def __init__(self):
-        super().__init__(settings.USER_GRPC_SERVER)
+        super().__init__(settings.CHAT_GRPC_SERVER)
         self.stub = mess_pb2_grpc.ChatServiceStub(self.channel)
 
     @staticmethod
-    def _auth_metadata(access_token: Optional[str]):
+    def _auth_metadata(access_token: Optional[str], current_user_id: Optional[str] = None):
+        metadata = []
         if access_token:
-            return (("authorization", f"Bearer {access_token}"),)
-        return None
+            metadata.append(("authorization", f"Bearer {access_token}"))
+        if current_user_id:
+            metadata.append(("x-user-id", str(current_user_id)))
+        return tuple(metadata) if metadata else None
 
     # ---- реализовано ----
     def create_chat(
@@ -28,6 +31,7 @@ class ChatGrpcClient(BaseGrpcClient):
         member_ids: List[str],
         max_members: Optional[int] = None,
         access_token: Optional[str] = None,
+        current_user_id: Optional[str] = None,
     ) -> mess_pb2.Chat:
         chat_type_map = {
             "private": mess_pb2.PRIVATE,
@@ -55,7 +59,7 @@ class ChatGrpcClient(BaseGrpcClient):
             return self.stub.CreateChat(
                 request,
                 timeout=5,
-                metadata=self._auth_metadata(access_token),
+                metadata=self._auth_metadata(access_token, current_user_id),
             )
         except grpc.RpcError as e:
             self._handle_rpc_error(e)

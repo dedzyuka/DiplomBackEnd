@@ -1,8 +1,10 @@
+import os
 from queue import Empty
 import uuid
 import datetime
 import grpc
 from google.protobuf.timestamp_pb2 import Timestamp
+import jwt
 from sqlalchemy import select, func, update
 
 from database import AsyncSessionLocal
@@ -39,9 +41,61 @@ PROTO_STATUS_TO_DB = {
 
 
 class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
+    def __init__(self):
+        self.secret_key = os.getenv("SECRET_KEY", "change-me-in-production")
+        self.algorithm = os.getenv("JWT_ALGORITHM", "HS256")
+        self.issuer = os.getenv("JWT_ISSUER", "messenger-backend")
+        self.audience = os.getenv("JWT_AUDIENCE", "messenger-clients")
+
+    async def _get_current_user_id(self, context) -> str | None:
+        metadata = context.invocation_metadata() if context else None
+        auth_header = None
+        forwarded_user_id = None
+
+        if metadata:
+            for item in metadata:
+                key = (item.key or "").lower()
+                if key == "authorization":
+                    auth_header = item.value
+                elif key in {"x-user-id", "user-id"}:
+                    forwarded_user_id = item.value
+
+        if auth_header:
+            token = auth_header.strip()
+            if token.lower().startswith("bearer "):
+                token = token[7:].strip()
+
+            if token:
+                try:
+                    payload = jwt.decode(
+                        token,
+                        self.secret_key,
+                        algorithms=[self.algorithm],
+                        audience=self.audience,
+                        issuer=self.issuer,
+                    )
+                except Exception:
+                    await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Unauthenticated")
+
+                if payload.get("type") != "access":
+                    await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Unauthenticated")
+
+                sub = payload.get("sub")
+                if sub:
+                    return str(sub)
+
+        if forwarded_user_id:
+            return forwarded_user_id
+
+        return None
+
     async def CreateChat(self, request: mess_pb2.CreateChatRequest, context) -> mess_pb2.Chat:
         # --- auth ---
-        creator_id = getattr(context, "current_user_id", None) or getattr(context, "user_id", None)
+        creator_id = (
+            getattr(context, "current_user_id", None)
+            or getattr(context, "user_id", None)
+            or await self._get_current_user_id(context)
+        )
         if not creator_id:
             await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Unauthenticated")
 
