@@ -69,7 +69,7 @@ class ChatMutations:
         chat_id: str,
         user_id: str,
         role: str = "member",
-    ):
+    )->bool:
         # TODO: call info.context.chat_client.add_chat_member(...)
         pass
 
