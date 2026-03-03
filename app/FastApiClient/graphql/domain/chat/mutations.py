@@ -26,6 +26,11 @@ class ChatMutations:
         """
         if not info.context.current_user_id:
             raise PermissionError("Authorization required for create chat")
+        
+        normalized_member_ids = list(dict.fromkeys(member_ids))
+        if not normalized_member_ids:
+            raise ValueError("member_ids must not be empty")
+
 
         # gRPC stub у тебя синхронный -> чтобы не блокировать event loop, гоняем в thread
         def _call_grpc():
@@ -35,7 +40,7 @@ class ChatMutations:
                 description=description or "",
                 avatar_url=avatar_url or "",
                 is_public=is_public,
-                member_ids=member_ids,
+                member_ids=normalized_member_ids,
                 max_members=max_members,
                 access_token=info.context.access_token,
                 current_user_id=info.context.current_user_id,

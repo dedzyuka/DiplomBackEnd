@@ -18,6 +18,7 @@ class GraphQLContext(BaseContext):
         chat_client,  # ✅ есть в сигнатуре
         current_user_id: Optional[str] = None,
         access_token: Optional[str] = None,
+        is_access_token_verified: bool = False,
     ):
         self.request = request
         self.user_client = user_client
@@ -25,6 +26,7 @@ class GraphQLContext(BaseContext):
         self.chat_client = chat_client  # ✅ сохраняем
         self.current_user_id = current_user_id
         self.access_token = access_token
+        self.is_access_token_verified = is_access_token_verified
 
 
 def _normalize_token(raw: Optional[str]) -> Optional[str]:
@@ -100,14 +102,16 @@ def _extract_bearer_token(request: Request) -> Optional[str]:
 async def get_context(request: Request) -> GraphQLContext:
     token = _extract_bearer_token(request)
     current_user_id: Optional[str] = None
+    is_access_token_verified = False
 
     if token:
         payload = verify_token(token, token_type="access")
         if not payload:
             payload = verify_token(token, token_type=None)
-
+    
         if payload:
             current_user_id = payload.get("sub")
+            is_access_token_verified = True
         else:
             current_user_id = _extract_sub_unverified(token)
             if not current_user_id:
@@ -124,5 +128,6 @@ async def get_context(request: Request) -> GraphQLContext:
         auth_client=auth_client,
         chat_client=chat_client,  # ✅ вот этого не хватало
         current_user_id=current_user_id,
-        access_token=token,
+        access_token=token if is_access_token_verified else None,
+        is_access_token_verified=is_access_token_verified,
     )
