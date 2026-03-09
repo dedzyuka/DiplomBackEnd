@@ -105,13 +105,15 @@ async def get_context(request: Request) -> GraphQLContext:
     is_access_token_verified = False
 
     if token:
-        payload = verify_token(token, token_type="access")
-        if not payload:
-            payload = verify_token(token, token_type=None)
+        access_payload = verify_token(token, token_type="access")
+        any_payload = access_payload or verify_token(token, token_type=None)
     
-        if payload:
-            current_user_id = payload.get("sub")
-            is_access_token_verified = True
+        if any_payload:
+            current_user_id = any_payload.get("sub")
+            # В gRPC как Authorization отправляем только действительно access-токен.
+            is_access_token_verified = access_payload is not None
+
+            
         else:
             current_user_id = _extract_sub_unverified(token)
             if not current_user_id:

@@ -74,15 +74,20 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                         audience=self.audience,
                         issuer=self.issuer,
                     )
+                    if payload.get("type") == "access":
+                        sub = payload.get("sub")
+                        if sub:
+                            return str(sub)
                 except Exception:
+                    # Если auth_header невалидный, но есть доверенный x-user-id от API-gateway,
+                    # даём fallback вместо немедленного UNAUTHENTICATED.
+                    if forwarded_user_id:
+                        return forwarded_user_id
                     await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Unauthenticated")
 
-                if payload.get("type") != "access":
-                    await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Unauthenticated")
-
-                sub = payload.get("sub")
-                if sub:
-                    return str(sub)
+                if forwarded_user_id:
+                    return forwarded_user_id
+                await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Unauthenticated")
 
         if forwarded_user_id:
             return forwarded_user_id
@@ -128,18 +133,21 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
 
         if request.chat_type == mess_pb2.PRIVATE:
             others = [u for u in member_uuids if u != creator_uuid]
-            if len(others) != 1:
+            if len(others) == 1:
+                other_uuid = others[0]
+                member_uuids = [creator_uuid, other_uuid]
+                max_members = 2
+            elif len(others) == 0 and len(member_uuids) == 1 and member_uuids[0] == creator_uuid:
+                # Разрешаем self-dialog, если клиент прислал только текущего пользователя.
+                other_uuid = None
+                member_uuids = [creator_uuid]
+                max_members = 1
+            else:
                 await context.abort(
                     grpc.StatusCode.INVALID_ARGUMENT,
                     "PRIVATE chat must have exactly 1 other participant in member_ids",
                 )
-            other_uuid = others[0]
-            if other_uuid == creator_uuid:
-                await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Cannot create PRIVATE chat with yourself")
-
-            member_uuids = [creator_uuid, other_uuid]
             is_public = False
-            max_members = 2
 
         elif request.chat_type == mess_pb2.GROUP:
             if creator_uuid not in member_uuids:
@@ -173,35 +181,44 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
 
         async with AsyncSessionLocal() as session:
             try:
-                # ====== ВАЖНО: анти-дубликат для PRIVATE ======
-                # Ищем существующий PRIVATE чат ровно между двумя пользователями (ровно 2 участника).
                 if request.chat_type == mess_pb2.PRIVATE:
-                    candidate_chat_id_stmt = (
-                        select(ChatMember.chat_id)
-                        .join(Chat, Chat.chat_id == ChatMember.chat_id)
-                        .where(
-                            Chat.chat_type == DbChatType.private,
-                            ChatMember.user_id.in_([creator_uuid, other_uuid]),
+                    if other_uuid is None:
+                        candidate_chat_id_stmt = (
+                            select(ChatMember.chat_id)
+                            .join(Chat, Chat.chat_id == ChatMember.chat_id)
+                            .where(
+                                Chat.chat_type == DbChatType.private,
+                                ChatMember.user_id == creator_uuid,
+                            )
+                            .group_by(ChatMember.chat_id)
+                            .having(func.count(func.distinct(ChatMember.user_id)) == 1)
+                            .having(func.count(ChatMember.user_id) == 1)
+                            .limit(1)
                         )
-                        .group_by(ChatMember.chat_id)
-                        .having(func.count(func.distinct(ChatMember.user_id)) == 2)
-                        .having(func.count(ChatMember.user_id) == 2)
-                        .limit(1)
-                    )
+                    else:
+                        candidate_chat_id_stmt = (
+                            select(ChatMember.chat_id)
+                            .join(Chat, Chat.chat_id == ChatMember.chat_id)
+                            .where(
+                                Chat.chat_type == DbChatType.private,
+                                ChatMember.user_id.in_([creator_uuid, other_uuid]),
+                            )
+                            
+                        )
                     candidate_chat_id = (await session.execute(candidate_chat_id_stmt)).scalar_one_or_none()
 
                     if candidate_chat_id is not None:
                         # (опционально) ре-активируем участие создателя/второго, если кто-то выходил
-                        async with session.begin():
-                            await session.execute(
-                                update(ChatMember)
-                                .where(
-                                    ChatMember.chat_id == candidate_chat_id,
-                                    ChatMember.user_id.in_([creator_uuid, other_uuid]),
-                                    ChatMember.status == DbMemberStatus.left,
-                                )
-                                .values(status=DbMemberStatus.active, left_at=None)
+                        await session.execute(
+                            update(ChatMember)
+                            .where(
+                                ChatMember.chat_id == candidate_chat_id,
+                                ChatMember.user_id.in_(member_uuids),
+                                ChatMember.status == DbMemberStatus.left,
                             )
+                            .values(status=DbMemberStatus.active, left_at=None)
+                        )
+                        await session.commit()
 
                         existing_chat = (
                             await session.execute(select(Chat).where(Chat.chat_id == candidate_chat_id))
@@ -213,7 +230,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                             is_public=bool(existing_chat.is_public),
                             max_members=int(existing_chat.max_members),
                             created_at=_dt_to_ts(existing_chat.created_at),
-                            members_count=2,
+                            members_count=len(member_uuids),
                         )
                         if existing_chat.name is not None:
                             resp.name = existing_chat.name
@@ -234,30 +251,31 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                     missing = [str(u) for u in member_uuids if str(u) not in found_set]
                     await context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"Unknown user_id(s): {missing}")
 
-                async with session.begin():
-                    new_chat = Chat(
-                        chat_type=db_chat_type,
-                        name=request.name if request.HasField("name") else None,
-                        description=request.description if request.HasField("description") else None,
-                        avatar_url=request.avatar_url if request.HasField("avatar_url") else None,
-                        creator_id=creator_uuid,
-                        is_public=is_public,
-                        max_members=max_members,
-                    )
-                    session.add(new_chat)
-                    await session.flush()  # получить new_chat.chat_id
+                new_chat = Chat(
+                    chat_type=db_chat_type,
+                    name=request.name if request.HasField("name") else None,
+                    description=request.description if request.HasField("description") else None,
+                    avatar_url=request.avatar_url if request.HasField("avatar_url") else None,
+                    creator_id=creator_uuid,
+                    is_public=is_public,
+                    max_members=max_members,
+                )
+                session.add(new_chat)
+                await session.flush()  # получить new_chat.chat_id
 
-                    now = datetime.datetime.now(datetime.timezone.utc)
-                    for u in member_uuids:
-                        session.add(
-                            ChatMember(
-                                chat_id=new_chat.chat_id,
-                                user_id=u,
-                                role=db_owner_role if u == creator_uuid else db_member_role,
-                                status=db_active_status,
-                                joined_at=now,
-                            )
+                now = datetime.datetime.now(datetime.timezone.utc)
+                for u in member_uuids:
+                    session.add(
+                        ChatMember(
+                            chat_id=new_chat.chat_id,
+                            user_id=u,
+                            role=db_owner_role if u == creator_uuid else db_member_role,
+                            status=db_active_status,
+                            joined_at=now,
                         )
+                    )
+
+                await session.commit()
 
                 await session.refresh(new_chat)
 
