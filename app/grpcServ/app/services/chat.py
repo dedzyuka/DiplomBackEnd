@@ -203,6 +203,10 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                                 Chat.chat_type == DbChatType.private,
                                 ChatMember.user_id.in_([creator_uuid, other_uuid]),
                             )
+                            .group_by(ChatMember.chat_id)
+                            .having(func.count(func.distinct(ChatMember.user_id)) == 2)
+                            .having(func.count(ChatMember.user_id) == 2)
+                            .limit(1)
                             
                         )
                     candidate_chat_id = (await session.execute(candidate_chat_id_stmt)).scalar_one_or_none()
