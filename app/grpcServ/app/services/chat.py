@@ -223,13 +223,14 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                         existing_chat = (
                             await session.execute(select(Chat).where(Chat.chat_id == candidate_chat_id))
                         ).scalar_one()
-
+                        print(member_uuids)
                         resp = mess_pb2.Chat(
                             chat_id=str(existing_chat.chat_id),
                             chat_type=mess_pb2.PRIVATE,
                             is_public=bool(existing_chat.is_public),
                             max_members=int(existing_chat.max_members),
                             created_at=_dt_to_ts(existing_chat.created_at),
+
                             members_count=len(member_uuids),
                         )
                         if existing_chat.name is not None:

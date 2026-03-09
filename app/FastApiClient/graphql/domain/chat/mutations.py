@@ -47,6 +47,7 @@ class ChatMutations:
             )
 
         grpc_chat = await anyio.to_thread.run_sync(_call_grpc)
+        print(grpc_chat)
         return from_grpc_chat(grpc_chat)
 
     @strawberry.mutation

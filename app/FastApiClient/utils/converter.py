@@ -43,5 +43,5 @@ def from_grpc_chat(grpc_chat) -> Chat:
         max_members=int(grpc_chat.max_members),
         created_at=created_iso,
 
-        members_count=int(grpc_chat.members_count),
+        # members_count=int(grpc_chat.members_count),
     )

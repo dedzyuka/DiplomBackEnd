@@ -1,66 +1,74 @@
-import json
+from __future__ import annotations
+
 import logging
-from typing import Dict, List, Optional
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import DefaultDict, Iterable
 
 from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class ConnectionRef:
+    user_id: str
+    websocket: WebSocket
+
+
 class ConnectionManager:
-    """Управляет WebSocket-соединениями и офлайн-очередью."""
-
     def __init__(self):
-        self.active_connections: Dict[str, WebSocket] = {}
-        self.offline_messages: Dict[str, List[str]] = {}
+        self._connections: DefaultDict[str, set[WebSocket]] = defaultdict(set)
 
-    async def connect(self, websocket: WebSocket, user_id: str) -> None:
-        """Принимает соединение и добавляет пользователя в онлайн."""
+    async def connect(self, websocket: WebSocket, user_id: str) -> ConnectionRef:
         await websocket.accept()
-        self.active_connections[user_id] = websocket
-        await self._send_offline_messages(user_id)
-        logger.info(f"User {user_id} connected. Online: {len(self.active_connections)}")
+        self._connections[user_id].add(websocket)
+        logger.info("WS connected user_id=%s online_users=%s", user_id, len(self._connections))
+        return ConnectionRef(user_id=user_id, websocket=websocket)
 
-    async def disconnect(self, user_id: str) -> None:
-        """Удаляет пользователя из активных соединений."""
-        if user_id in self.active_connections:
-            del self.active_connections[user_id]
-            logger.info(f"User {user_id} disconnected. Online: {len(self.active_connections)}")
+    async def disconnect(self, connection: ConnectionRef) -> None:
+        user_connections = self._connections.get(connection.user_id)
+        if not user_connections:
+            return
 
-    async def send_personal_message(self, message: str, user_id: str) -> None:
-        """Отправляет личное сообщение. Если получатель офлайн – сохраняет в очередь."""
-        if user_id in self.active_connections:
-            await self.active_connections[user_id].send_text(message)
-        else:
-            self.offline_messages.setdefault(user_id, []).append(message)
-            logger.debug(f"Offline message stored for {user_id}")
+        user_connections.discard(connection.websocket)
+        if not user_connections:
+            self._connections.pop(connection.user_id, None)
 
-    async def broadcast(self, message: str, exclude_user: Optional[str] = None) -> None:
-        """Отправляет сообщение всем онлайн-пользователям, кроме указанного."""
-        for uid, conn in self.active_connections.items():
-            if exclude_user and uid == exclude_user:
+        logger.info("WS disconnected user_id=%s online_users=%s", connection.user_id, len(self._connections))
+
+    async def send_to_user(self, user_id: str, payload: dict) -> bool:
+        targets = self._connections.get(user_id)
+        if not targets:
+            return False
+
+        dead: list[WebSocket] = []
+        for ws in targets:
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                dead.append(ws)
+
+        for ws in dead:
+            targets.discard(ws)
+
+        if not targets:
+            self._connections.pop(user_id, None)
+
+        return bool(targets)
+
+    async def send_to_users(self, user_ids: Iterable[str], payload: dict, exclude_user_id: str | None = None) -> None:
+        for user_id in user_ids:
+            if exclude_user_id and user_id == exclude_user_id:
                 continue
-            await conn.send_text(message)
+            await self.send_to_user(user_id, payload)
 
-    async def _send_offline_messages(self, user_id: str) -> None:
-        """Отправляет накопленные офлайн-сообщения при подключении."""
-        if user_id in self.offline_messages:
-            for msg in self.offline_messages[user_id]:
-                await self.send_personal_message(msg, user_id)
-            del self.offline_messages[user_id]
-    async def send_offline_messages(self, lastMess:str, user_id:str):
-        last_mess_json = {"LastMess":lastMess}
-        json_string = json.dumps(last_mess_json, ensure_ascii=False)
-        await self.send_personal_message(json_string, user_id)
+    @property
+    def online_users_count(self) -> int:
+        return len(self._connections)
 
-    def is_online(self, user_id: str) -> bool:
-        """Проверяет, находится ли пользователь в сети."""
-        return user_id in self.active_connections
-
-    def get_online_users(self) -> List[str]:
-        """Возвращает список идентификаторов онлайн-пользователей."""
-        return list(self.active_connections.keys())
+    def get_online_users(self) -> list[str]:
+        return list(self._connections.keys())
 
 
-# Глобальный экземпляр (синглтон)
 manager = ConnectionManager()
