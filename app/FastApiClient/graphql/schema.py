@@ -2,14 +2,14 @@ import strawberry
 from FastApiClient.graphql.domain.user.queries import UserQueries
 from FastApiClient.graphql.domain.user.mutations import UserMutations
 from FastApiClient.graphql.domain.auth.mutations import AuthMutations
-# from FastApiClient.graphql.domain.chat.queries import ChatQueries
+from FastApiClient.graphql.domain.chat.queries import ChatQueries
 from FastApiClient.graphql.domain.chat.mutations import ChatMutations
 
 
 @strawberry.type
 class Query:
     user: UserQueries = strawberry.field(resolver=lambda: UserQueries())
-    # chat: ChatQueries = strawberry.field(resolver=lambda: ChatQueries())
+    chat: ChatQueries = strawberry.field(resolver=lambda: ChatQueries())
 
 
 @strawberry.type

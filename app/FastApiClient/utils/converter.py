@@ -1,7 +1,7 @@
 from datetime import timezone
 from FastApiClient.protos.protobuf import mess_pb2
 from FastApiClient.graphql.domain.user.types import User as GraphQLUser
-from FastApiClient.models import Chat
+from FastApiClient.graphql.domain.chat.types import Chat as GraphQLChat
 
 def from_grpc_user(grpc_user: mess_pb2.User) -> GraphQLUser:
     """Преобразует protobuf User в GraphQL User."""
@@ -24,13 +24,13 @@ def from_grpc_user(grpc_user: mess_pb2.User) -> GraphQLUser:
         created_at=str(grpc_user.created_at.seconds),
         updated_at=str(grpc_user.updated_at.seconds),
     )
-def from_grpc_chat(grpc_chat) -> Chat:
+def from_grpc_chat(grpc_chat) -> GraphQLChat:
     # grpc_chat.created_at: google.protobuf.Timestamp
     # В python protobuf у Timestamp есть .ToDatetime()
     dt = grpc_chat.created_at.ToDatetime().astimezone(timezone.utc)
     created_iso = dt.isoformat()
 
-    return Chat(
+    return GraphQLChat(
         chat_id=str(grpc_chat.chat_id),
         chat_type=str(grpc_chat.chat_type),  # можно маппить в "private/group/channel" при желании
 
@@ -43,5 +43,5 @@ def from_grpc_chat(grpc_chat) -> Chat:
         max_members=int(grpc_chat.max_members),
         created_at=created_iso,
 
-        # members_count=int(grpc_chat.members_count),
+        members_count=int(getattr(grpc_chat, "members_count", 0)),
     )

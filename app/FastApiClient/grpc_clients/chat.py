@@ -20,10 +20,9 @@ class ChatGrpcClient(BaseGrpcClient):
             metadata.append(("x-user-id", str(current_user_id)))
         return tuple(metadata) if metadata else None
 
-    # ---- реализовано ----
     def create_chat(
         self,
-        chat_type: str,                 # "private" | "group" | "channel"
+        chat_type: str,
         name: str,
         description: str,
         avatar_url: str,
@@ -64,28 +63,93 @@ class ChatGrpcClient(BaseGrpcClient):
         except grpc.RpcError as e:
             self._handle_rpc_error(e)
 
-    # ---- остальное: pass ----
-    def get_chat(self, chat_id: str, access_token: Optional[str] = None) -> mess_pb2.Chat:
-        pass
+    def get_chat(self, chat_id: str, access_token: Optional[str] = None, current_user_id: Optional[str] = None) -> mess_pb2.Chat:
+        try:
+            return self.stub.GetChat(
+                mess_pb2.GetChatRequest(chat_id=chat_id),
+                timeout=5,
+                metadata=self._auth_metadata(access_token, current_user_id),
+            )
+        except grpc.RpcError as e:
+            self._handle_rpc_error(e)
 
-    def list_chats(self, page: int = 1, page_size: int = 20, access_token: Optional[str] = None):
-        pass
+    def list_chats(self, user_id: str, page: int = 1, page_size: int = 20,
+                   access_token: Optional[str] = None, current_user_id: Optional[str] = None):
+        page = max(1, page)
+        page_size = max(1, page_size)
+        request = mess_pb2.ListChatsRequest(user_id=user_id, page_size=page_size, page_token=str((page - 1) * page_size))
+        try:
+            return self.stub.ListChats(request, timeout=5, metadata=self._auth_metadata(access_token, current_user_id))
+        except grpc.RpcError as e:
+            self._handle_rpc_error(e)
 
     def update_chat(self, chat_id: str, name: Optional[str] = None, description: Optional[str] = None,
                     avatar_url: Optional[str] = None, is_public: Optional[bool] = None,
-                    max_members: Optional[int] = None, access_token: Optional[str] = None) -> mess_pb2.Chat:
-        pass
+                    max_members: Optional[int] = None, access_token: Optional[str] = None,
+                    current_user_id: Optional[str] = None) -> mess_pb2.Chat:
+        req_kwargs = {"chat_id": chat_id}
+        if name is not None:
+            req_kwargs["name"] = name
+        if description is not None:
+            req_kwargs["description"] = description
+        if avatar_url is not None:
+            req_kwargs["avatar_url"] = avatar_url
+        if is_public is not None:
+            req_kwargs["is_public"] = is_public
+        if max_members is not None:
+            req_kwargs["max_members"] = int(max_members)
 
-    def delete_chat(self, chat_id: str, access_token: Optional[str] = None) -> None:
-        pass
+        try:
+            return self.stub.UpdateChat(
+                mess_pb2.UpdateChatRequest(**req_kwargs),
+                timeout=5,
+                metadata=self._auth_metadata(access_token, current_user_id),
+            )
+        except grpc.RpcError as e:
+            self._handle_rpc_error(e)
+
+    def delete_chat(self, chat_id: str, access_token: Optional[str] = None, current_user_id: Optional[str] = None) -> None:
+        try:
+            self.stub.DeleteChat(
+                mess_pb2.DeleteChatRequest(chat_id=chat_id),
+                timeout=5,
+                metadata=self._auth_metadata(access_token, current_user_id),
+            )
+        except grpc.RpcError as e:
+            self._handle_rpc_error(e)
 
     def add_chat_member(self, chat_id: str, user_id: str, role: str = "member",
-                        access_token: Optional[str] = None):
-        pass
+                        access_token: Optional[str] = None, current_user_id: Optional[str] = None):
+        role_map = {"owner": mess_pb2.OWNER, "admin": mess_pb2.ADMIN, "member": mess_pb2.MEMBER}
+        try:
+            return self.stub.AddChatMember(
+                mess_pb2.AddChatMemberRequest(chat_id=chat_id, user_id=user_id, role=role_map.get(role.lower(), mess_pb2.MEMBER)),
+                timeout=5,
+                metadata=self._auth_metadata(access_token, current_user_id),
+            )
+        except grpc.RpcError as e:
+            self._handle_rpc_error(e)
 
-    def remove_chat_member(self, chat_id: str, user_id: str, access_token: Optional[str] = None) -> None:
-        pass
+    def remove_chat_member(self, chat_id: str, user_id: str, access_token: Optional[str] = None,
+                           current_user_id: Optional[str] = None) -> None:
+        try:
+            self.stub.RemoveChatMember(
+                mess_pb2.RemoveChatMemberRequest(chat_id=chat_id, user_id=user_id),
+                timeout=5,
+                metadata=self._auth_metadata(access_token, current_user_id),
+            )
+        except grpc.RpcError as e:
+            self._handle_rpc_error(e)
 
     def list_chat_members(self, chat_id: str, page: int = 1, page_size: int = 50,
-                          access_token: Optional[str] = None):
-        pass
+                          access_token: Optional[str] = None, current_user_id: Optional[str] = None):
+        page = max(1, page)
+        page_size = max(1, page_size)
+        try:
+            return self.stub.ListChatMembers(
+                mess_pb2.ListChatMembersRequest(chat_id=chat_id, page_size=page_size, page_token=str((page - 1) * page_size)),
+                timeout=5,
+                metadata=self._auth_metadata(access_token, current_user_id),
+            )
+        except grpc.RpcError as e:
+            self._handle_rpc_error(e)

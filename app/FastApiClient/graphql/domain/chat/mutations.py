@@ -61,13 +61,36 @@ class ChatMutations:
         is_public: Optional[bool] = None,
         max_members: Optional[int] = None,
     ) -> Chat:
-        # TODO: call info.context.chat_client.update_chat(...)
-        pass
+        if not info.context.current_user_id:
+            raise PermissionError("Authorization required for update chat")
+
+        def _call_grpc():
+            return info.context.chat_client.update_chat(
+                chat_id=chat_id,
+                name=name,
+                description=description,
+                avatar_url=avatar_url,
+                is_public=is_public,
+                max_members=max_members,
+                access_token=info.context.access_token,
+                current_user_id=info.context.current_user_id,
+            )
+
+        return from_grpc_chat(await anyio.to_thread.run_sync(_call_grpc))
 
     @strawberry.mutation
     async def delete(self, info: strawberry.Info[GraphQLContext], chat_id: str) -> bool:
-        # TODO: call info.context.chat_client.delete_chat(...)
-        pass
+        if not info.context.current_user_id:
+            raise PermissionError("Authorization required for delete chat")
+
+        await anyio.to_thread.run_sync(
+            lambda: info.context.chat_client.delete_chat(
+                chat_id=chat_id,
+                access_token=info.context.access_token,
+                current_user_id=info.context.current_user_id,
+            )
+        )
+        return True
 
     @strawberry.mutation
     async def add_member(
@@ -77,8 +100,19 @@ class ChatMutations:
         user_id: str,
         role: str = "member",
     )->bool:
-        # TODO: call info.context.chat_client.add_chat_member(...)
-        pass
+        if not info.context.current_user_id:
+            raise PermissionError("Authorization required for add member")
+
+        await anyio.to_thread.run_sync(
+            lambda: info.context.chat_client.add_chat_member(
+                chat_id=chat_id,
+                user_id=user_id,
+                role=role,
+                access_token=info.context.access_token,
+                current_user_id=info.context.current_user_id,
+            )
+        )
+        return True
 
     @strawberry.mutation
     async def remove_member(
@@ -87,5 +121,15 @@ class ChatMutations:
         chat_id: str,
         user_id: str,
     ) -> bool:
-        # TODO: call info.context.chat_client.remove_chat_member(...)
-        pass
+        if not info.context.current_user_id:
+            raise PermissionError("Authorization required for remove member")
+
+        await anyio.to_thread.run_sync(
+            lambda: info.context.chat_client.remove_chat_member(
+                chat_id=chat_id,
+                user_id=user_id,
+                access_token=info.context.access_token,
+                current_user_id=info.context.current_user_id,
+            )
+        )
+        return True
