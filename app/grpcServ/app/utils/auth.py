@@ -4,10 +4,6 @@ import os
 
 
 async def get_current_user_id(context) -> str:
-    """
-    Асинхронно извлекает ID пользователя из метаданных gRPC-запроса.
-    При ошибке аутентификации вызывает context.abort().
-    """
     metadata = context.invocation_metadata() if context else None
     auth_header = None
     forwarded_user_id = None

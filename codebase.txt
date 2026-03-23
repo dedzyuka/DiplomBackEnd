@@ -1,5 +1,5 @@
 Generated from: /Users/bogdansakhno/Desktop/RabitmqTest
-Total .py files (git tracked, excluding alembic): 81
+Total .py files (git tracked, excluding alembic): 83
 
 ===== 1.py =====
 from jose import jwt
@@ -633,6 +633,10 @@ class Settings(BaseSettings):
     JWT_ISSUER: str = "messenger-backend"
     JWT_AUDIENCE: str = "messenger-clients"
 
+    # Redis session store
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_PREFIX: str = "messenger"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
@@ -642,6 +646,83 @@ settings = Settings()
 
 
 ===== app/FastApiClient/core/security.py =====
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional
+
+import redis.asyncio as redis
+from jose import JWTError, jwt
+
+from FastApiClient.core.config import settings
+
+
+@dataclass(slots=True)
+class AccessSessionPrincipal:
+    user_id: str
+    session_id: str
+    payload: dict
+    access_token: str
+
+
+_redis_client: Optional[redis.Redis] = None
+
+
+def _get_redis() -> redis.Redis:
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = redis.from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+        )
+    return _redis_client
+
+
+def _session_key(session_id: str) -> str:
+    return f"{settings.REDIS_PREFIX}:auth:session:{session_id}"
+
+
+async def verify_access_session(token: str) -> Optional[AccessSessionPrincipal]:
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+            audience=settings.JWT_AUDIENCE,
+            issuer=settings.JWT_ISSUER,
+        )
+    except JWTError:
+        return None
+
+    if payload.get("type") != "access":
+        return None
+
+    user_id = payload.get("sub")
+    session_id = payload.get("sid")
+
+    if not user_id or not session_id:
+        return None
+
+    session_data = await _get_redis().hgetall(_session_key(str(session_id)))
+    if not session_data:
+        return None
+
+    # сессия должна принадлежать тому же пользователю
+    if session_data.get("user_id") != str(user_id):
+        return None
+
+    # пока auth service хранит access_token в Redis — используем это как жёсткую проверку
+    stored_access_token = session_data.get("access_token")
+    if stored_access_token and stored_access_token != token:
+        return None
+
+    return AccessSessionPrincipal(
+        user_id=str(user_id),
+        session_id=str(session_id),
+        payload=payload,
+        access_token=token,
+    )
+
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 from uuid import uuid4
@@ -649,7 +730,7 @@ from uuid import uuid4
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
-from FastApiClient.core.config import settings
+
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -700,8 +781,7 @@ def verify_token(token: str, token_type: Optional[str] = "access") -> Optional[D
         if not payload.get("sub"):
             return None
         return payload
-    except JWTError as e:
-        print("VERIFY_TOKEN ERROR:", repr(e))
+    except JWTError:
         return None
 
 
@@ -711,6 +791,84 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
+
+===== app/FastApiClient/core/session_auth.py =====
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional
+
+import redis.asyncio as redis
+from jose import JWTError, jwt
+
+from FastApiClient.core.config import settings
+
+
+@dataclass(slots=True)
+class AccessSessionPrincipal:
+    user_id: str
+    session_id: str
+    payload: dict
+    access_token: str
+
+
+_redis_client: Optional[redis.Redis] = None
+
+
+def _get_redis() -> redis.Redis:
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = redis.from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+        )
+    return _redis_client
+
+
+def _session_key(session_id: str) -> str:
+    return f"{settings.REDIS_PREFIX}:auth:session:{session_id}"
+
+
+async def verify_access_session(token: str) -> Optional[AccessSessionPrincipal]:
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+            audience=settings.JWT_AUDIENCE,
+            issuer=settings.JWT_ISSUER,
+        )
+    except JWTError:
+        return None
+
+    if payload.get("type") != "access":
+        return None
+
+    user_id = payload.get("sub")
+    session_id = payload.get("sid")
+
+    if not user_id or not session_id:
+        return None
+
+    session_data = await _get_redis().hgetall(_session_key(str(session_id)))
+    if not session_data:
+        return None
+
+    # сессия должна принадлежать тому же пользователю
+    if session_data.get("user_id") != str(user_id):
+        return None
+
+    # пока auth service хранит access_token в Redis — используем это как жёсткую проверку
+    stored_access_token = session_data.get("access_token")
+    if stored_access_token and stored_access_token != token:
+        return None
+
+    return AccessSessionPrincipal(
+        user_id=str(user_id),
+        session_id=str(session_id),
+        payload=payload,
+        access_token=token,
+    )
 
 ===== app/FastApiClient/crud/__init__.py =====
 # grpc_api_Rest CRUD
@@ -926,48 +1084,47 @@ Base = declarative_base()
 from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional, AsyncGenerator
+from typing import AsyncGenerator
 import uuid
 
 from app.FastApiClient.database import AsyncSessionLocal
-from app.FastApiClient.core.security import verify_token
+from app.FastApiClient.core.session_auth import verify_access_session
 from app.FastApiClient.models import User
-from app.FastApiClient.schemas import UserResponse
 from app.FastApiClient.enums import AccountStatus
 from app.FastApiClient.crud.users import get_user_by_id
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         yield session
 
+
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> User:
-    payload = verify_token(token, "access")
-    if not payload:
+    principal = await verify_access_session(token)
+    if not principal:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
+            detail="Invalid or revoked authentication session",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    
-    user = await get_user_by_id(db, uuid.UUID(user_id))
+
+    user = await get_user_by_id(db, uuid.UUID(principal.user_id))
     if not user or user.status != AccountStatus.active:
         raise HTTPException(status_code=401, detail="User not found or inactive")
+
     return user
 
-# Пагинация
+
 class PaginationParams:
     def __init__(
         self,
         limit: int = Query(50, ge=1, le=100),
-        offset: int = Query(0, ge=0)
+        offset: int = Query(0, ge=0),
     ):
         self.limit = limit
         self.offset = offset
@@ -1087,7 +1244,9 @@ def _extract_bearer_token(request: Request) -> Optional[str]:
 
 
 async def get_context(request: Request) -> GraphQLContext:
+    raw_auth_header = request.headers.get("Authorization")
     token = _extract_bearer_token(request)
+
     current_user_id: Optional[str] = None
     is_access_token_verified = False
     verified_access_token: Optional[str] = None
@@ -1098,9 +1257,11 @@ async def get_context(request: Request) -> GraphQLContext:
             current_user_id = str(access_payload["sub"])
             is_access_token_verified = True
             verified_access_token = token
+
+    print("CTX auth_header_present =", bool(raw_auth_header))
+    print("CTX token_extracted =", bool(token))
+    print("CTX token_verified =", is_access_token_verified)
     print("CTX current_user_id =", current_user_id)
-    print("CTX access_token_verified =", is_access_token_verified)
-    print("CTX access_token_present =", bool(token))
 
     return GraphQLContext(
         request=request,
@@ -1355,8 +1516,9 @@ class ChatQueries:
         page: int = 1,
         page_size: int = 20,
     ) -> List[Chat]:
-        if not info.context.current_user_id:
-            raise PermissionError("Authorization required")
+        if not info.context.is_access_token_verified or not info.context.access_token:
+            raise PermissionError("Missing or invalid access token")
+
         grpc_resp = await anyio.to_thread.run_sync(
             lambda: info.context.chat_client.list_chats(
                 user_id=info.context.current_user_id,
@@ -7980,19 +8142,22 @@ class AuthServicer(mess_pb2_grpc.AuthServiceServicer):
         return Empty()
 
 ===== app/grpcServ/app/services/chat.py =====
-import os
 from google.protobuf.empty_pb2 import Empty
 import uuid
 import datetime
 import grpc
 from google.protobuf.timestamp_pb2 import Timestamp
-from jose import JWTError, jwt
 from sqlalchemy import select, func, update, delete
 
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
+from services.access_session import require_current_user_uuid
 from services.models import Chat, User, ChatMember
-from services.enums import ChatType as DbChatType, MemberRole as DbMemberRole, MemberStatus as DbMemberStatus
+from services.enums import (
+    ChatType as DbChatType,
+    MemberRole as DbMemberRole,
+    MemberStatus as DbMemberStatus,
+)
 
 
 def _dt_to_ts(dt: datetime.datetime) -> Timestamp:
@@ -8022,284 +8187,9 @@ PROTO_STATUS_TO_DB = {
 }
 
 
-from core.config import settings
-
 class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
-    def __init__(self):
-        self.secret_key = settings.SECRET_KEY
-        self.algorithm = settings.JWT_ALGORITHM
-        self.issuer = settings.JWT_ISSUER
-        self.audience = settings.JWT_AUDIENCE
-
-    async def _get_current_user_id(self, context) -> str | None:
-        metadata = context.invocation_metadata() if context else None
-        auth_header = None
-
-        if metadata:
-            for item in metadata:
-                key = (item.key or "").lower()
-                if key == "authorization":
-                    auth_header = item.value
-                    break
-
-        if not auth_header:
-            return None
-
-        token = auth_header.strip()
-        if token.lower().startswith("bearer "):
-            token = token[7:].strip()
-
-        try:
-            payload = jwt.decode(
-            token,
-            self.secret_key,
-            algorithms=[self.algorithm],
-            audience=self.audience,
-            issuer=self.issuer,
-        )
-        except JWTError as e:
-            print("CHAT TOKEN DECODE ERROR:", repr(e))
-            return None
-        except Exception as e:
-            print("CHAT TOKEN DECODE ERROR:", repr(e))
-            return None
-
-        if payload.get("type") != "access":
-            return None
-
-        sub = payload.get("sub")
-        print("CHAT auth_header present =", bool(auth_header))
-
-        return str(sub) if sub else None
-
-    async def CreateChat(self, request: mess_pb2.CreateChatRequest, context) -> mess_pb2.Chat:
-        # --- auth ---
-        creator_id = (
-            getattr(context, "current_user_id", None)
-            or getattr(context, "user_id", None)
-            or await self._get_current_user_id(context)
-        )
-        if not creator_id:
-            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Unauthenticated")
-
-        try:
-            creator_uuid = creator_id if isinstance(creator_id, uuid.UUID) else uuid.UUID(str(creator_id))
-        except Exception:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid current_user_id in context")
-
-        # --- validate chat_type ---
-        if request.chat_type == mess_pb2.CHAT_TYPE_UNSPECIFIED:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "chat_type is required")
-
-        db_chat_type = PROTO_CHATTYPE_TO_DB.get(request.chat_type)
-        if db_chat_type is None:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Unknown chat_type")
-
-        # --- normalize member_ids (-> UUID, dedupe) ---
-        raw_member_ids = [m for m in list(request.member_ids) if m]
-        raw_member_ids = list(dict.fromkeys(raw_member_ids))  # dedupe preserving order
-
-        member_uuids: list[uuid.UUID] = []
-        for mid in raw_member_ids:
-            try:
-                member_uuids.append(uuid.UUID(str(mid)))
-            except Exception:
-                await context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"Invalid member_id UUID: {mid}")
-
-        # --- enforce per-type rules ---
-        other_uuid = None
-
-        if request.chat_type == mess_pb2.PRIVATE:
-            others = [u for u in member_uuids if u != creator_uuid]
-            if len(others) == 1:
-                other_uuid = others[0]
-                member_uuids = [creator_uuid, other_uuid]
-                max_members = 2
-            elif len(others) == 0 and len(member_uuids) == 1 and member_uuids[0] == creator_uuid:
-                # Разрешаем self-dialog, если клиент прислал только текущего пользователя.
-                other_uuid = None
-                member_uuids = [creator_uuid]
-                max_members = 1
-            else:
-                await context.abort(
-                    grpc.StatusCode.INVALID_ARGUMENT,
-                    "PRIVATE chat must have exactly 1 other participant in member_ids",
-                )
-            is_public = False
-
-        elif request.chat_type == mess_pb2.GROUP:
-            if creator_uuid not in member_uuids:
-                member_uuids = [creator_uuid] + member_uuids
-
-            is_public = bool(request.is_public)
-            max_members = int(request.max_members) if request.HasField("max_members") and request.max_members > 0 else 200
-
-            if len(member_uuids) > max_members:
-                await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "max_members exceeded")
-
-        elif request.chat_type == mess_pb2.CHANNEL:
-            # допускаем initial admins как member_ids, но creator обязан быть
-            if creator_uuid not in member_uuids:
-                member_uuids = [creator_uuid] + member_uuids
-            else:
-                member_uuids = [creator_uuid] + [u for u in member_uuids if u != creator_uuid]
-
-            is_public = bool(request.is_public)
-            max_members = int(request.max_members) if request.HasField("max_members") and request.max_members > 0 else 200
-
-            if len(member_uuids) > max_members:
-                await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "max_members exceeded")
-
-        else:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Unknown chat_type")
-
-        db_owner_role = PROTO_ROLE_TO_DB[mess_pb2.OWNER]
-        db_member_role = PROTO_ROLE_TO_DB[mess_pb2.MEMBER]
-        db_active_status = PROTO_STATUS_TO_DB[mess_pb2.ACTIVE_N]
-
-        async with AsyncSessionLocal() as session:
-            try:
-                if request.chat_type == mess_pb2.PRIVATE:
-                    if other_uuid is None:
-                        candidate_chat_id_stmt = (
-                            select(ChatMember.chat_id)
-                            .join(Chat, Chat.chat_id == ChatMember.chat_id)
-                            .where(
-                                Chat.chat_type == DbChatType.private,
-                                ChatMember.user_id == creator_uuid,
-                            )
-                            .group_by(ChatMember.chat_id)
-                            .having(func.count(func.distinct(ChatMember.user_id)) == 1)
-                            .having(func.count(ChatMember.user_id) == 1)
-                            .limit(1)
-                        )
-                    else:
-                        candidate_chat_id_stmt = (
-                            select(ChatMember.chat_id)
-                            .join(Chat, Chat.chat_id == ChatMember.chat_id)
-                            .where(
-                                Chat.chat_type == DbChatType.private,
-                                ChatMember.user_id.in_([creator_uuid, other_uuid]),
-                            )
-                            .group_by(ChatMember.chat_id)
-                            .having(func.count(func.distinct(ChatMember.user_id)) == 2)
-                            .having(func.count(ChatMember.user_id) == 2)
-                            .limit(1)
-                            
-                        )
-                    candidate_chat_id = (await session.execute(candidate_chat_id_stmt)).scalar_one_or_none()
-
-                    if candidate_chat_id is not None:
-                        # (опционально) ре-активируем участие создателя/второго, если кто-то выходил
-                        await session.execute(
-                            update(ChatMember)
-                            .where(
-                                ChatMember.chat_id == candidate_chat_id,
-                                ChatMember.user_id.in_(member_uuids),
-                                ChatMember.status == DbMemberStatus.left,
-                            )
-                            .values(status=DbMemberStatus.active, left_at=None)
-                        )
-                        await session.commit()
-
-                        existing_chat = (
-                            await session.execute(select(Chat).where(Chat.chat_id == candidate_chat_id))
-                        ).scalar_one()
-                        print(member_uuids)
-                        resp = mess_pb2.Chat(
-                            chat_id=str(existing_chat.chat_id),
-                            chat_type=mess_pb2.PRIVATE,
-                            is_public=bool(existing_chat.is_public),
-                            max_members=int(existing_chat.max_members),
-                            created_at=_dt_to_ts(existing_chat.created_at),
-
-                            members_count=len(member_uuids),
-                        )
-                        if existing_chat.name is not None:
-                            resp.name = existing_chat.name
-                        if existing_chat.description is not None:
-                            resp.description = existing_chat.description
-                        if existing_chat.avatar_url is not None:
-                            resp.avatar_url = existing_chat.avatar_url
-                        if existing_chat.creator_id is not None:
-                            resp.creator_id = str(existing_chat.creator_id)
-                        return resp
-                # ====== конец анти-дубликата ======
-
-                # validate users exist (для всех типов, включая PRIVATE если не нашли существующий)
-                q = select(User.user_id).where(User.user_id.in_(member_uuids))
-                found = (await session.execute(q)).scalars().all()
-                if len(found) != len(set(member_uuids)):
-                    found_set = {str(x) for x in found}
-                    missing = [str(u) for u in member_uuids if str(u) not in found_set]
-                    await context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"Unknown user_id(s): {missing}")
-
-                new_chat = Chat(
-                    chat_type=db_chat_type,
-                    name=request.name if request.HasField("name") else None,
-                    description=request.description if request.HasField("description") else None,
-                    avatar_url=request.avatar_url if request.HasField("avatar_url") else None,
-                    creator_id=creator_uuid,
-                    is_public=is_public,
-                    max_members=max_members,
-                )
-                session.add(new_chat)
-                await session.flush()  # получить new_chat.chat_id
-
-                now = datetime.datetime.now(datetime.timezone.utc)
-                for u in member_uuids:
-                    session.add(
-                        ChatMember(
-                            chat_id=new_chat.chat_id,
-                            user_id=u,
-                            role=db_owner_role if u == creator_uuid else db_member_role,
-                            status=db_active_status,
-                            joined_at=now,
-                        )
-                    )
-
-                await session.commit()
-
-                await session.refresh(new_chat)
-
-                resp = mess_pb2.Chat(
-                    chat_id=str(new_chat.chat_id),
-                    chat_type=request.chat_type,
-                    is_public=bool(new_chat.is_public),
-                    max_members=int(new_chat.max_members),
-                    created_at=_dt_to_ts(new_chat.created_at),
-                    members_count=len(member_uuids),
-                )
-                if new_chat.name is not None:
-                    resp.name = new_chat.name
-                if new_chat.description is not None:
-                    resp.description = new_chat.description
-                if new_chat.avatar_url is not None:
-                    resp.avatar_url = new_chat.avatar_url
-                if new_chat.creator_id is not None:
-                    resp.creator_id = str(new_chat.creator_id)
-
-                return resp
-
-            except grpc.RpcError:
-                raise
-            except Exception as e:
-                await session.rollback()
-                await context.abort(grpc.StatusCode.INTERNAL, f"CreateChat failed: {e}")
-
     async def _require_current_user_uuid(self, context) -> uuid.UUID:
-        current_user_id = (
-            getattr(context, "current_user_id", None)
-            or getattr(context, "user_id", None)
-            or await self._get_current_user_id(context)
-        )
-        if not current_user_id:
-            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Unauthenticated")
-        try:
-            return current_user_id if isinstance(current_user_id, uuid.UUID) else uuid.UUID(str(current_user_id))
-        except Exception:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid current_user_id in context")
-
+        return await require_current_user_uuid(context)
 
     @staticmethod
     def _db_role_to_proto(role: DbMemberRole) -> int:
@@ -8370,27 +8260,255 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
         if member.banned_until:
             resp.banned_until.CopyFrom(_dt_to_ts(member.banned_until))
 
-        user = (await session.execute(select(User).where(User.user_id == member.user_id))).scalar_one_or_none()
+        user = (
+            await session.execute(select(User).where(User.user_id == member.user_id))
+        ).scalar_one_or_none()
         if user:
-            resp.user.CopyFrom(mess_pb2.User(
-                user_id=str(user.user_id),
-                nick_name=user.nick_name,
-                is_online=bool(user.is_online),
-                status=mess_pb2.ACTIVE,
-                email_verified=bool(user.email_verified),
-                phone_verified=bool(user.phone_verified),
-                is_admin=bool(user.is_admin),
-                created_at=_dt_to_ts(user.created_at),
-                updated_at=_dt_to_ts(user.updated_at),
-            ))
+            resp.user.CopyFrom(
+                mess_pb2.User(
+                    user_id=str(user.user_id),
+                    nick_name=user.nick_name,
+                    is_online=bool(user.is_online),
+                    status=mess_pb2.ACTIVE,
+                    email_verified=bool(user.email_verified),
+                    phone_verified=bool(user.phone_verified),
+                    is_admin=bool(user.is_admin),
+                    created_at=_dt_to_ts(user.created_at),
+                    updated_at=_dt_to_ts(user.updated_at),
+                )
+            )
         return resp
 
-    async def _get_actor_member(self, session, chat_id: uuid.UUID, user_id: uuid.UUID) -> ChatMember | None:
+    async def _get_actor_member(
+        self, session, chat_id: uuid.UUID, user_id: uuid.UUID
+    ) -> ChatMember | None:
         return (
             await session.execute(
-                select(ChatMember).where(ChatMember.chat_id == chat_id, ChatMember.user_id == user_id)
+                select(ChatMember).where(
+                    ChatMember.chat_id == chat_id,
+                    ChatMember.user_id == user_id,
+                )
             )
         ).scalar_one_or_none()
+
+    async def CreateChat(
+        self, request: mess_pb2.CreateChatRequest, context
+    ) -> mess_pb2.Chat:
+        creator_uuid = await self._require_current_user_uuid(context)
+
+        if request.chat_type == mess_pb2.CHAT_TYPE_UNSPECIFIED:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "chat_type is required")
+
+        db_chat_type = PROTO_CHATTYPE_TO_DB.get(request.chat_type)
+        if db_chat_type is None:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Unknown chat_type")
+
+        raw_member_ids = [m for m in list(request.member_ids) if m]
+        raw_member_ids = list(dict.fromkeys(raw_member_ids))
+
+        member_uuids: list[uuid.UUID] = []
+        for mid in raw_member_ids:
+            try:
+                member_uuids.append(uuid.UUID(str(mid)))
+            except Exception:
+                await context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    f"Invalid member_id UUID: {mid}",
+                )
+
+        other_uuid = None
+
+        if request.chat_type == mess_pb2.PRIVATE:
+            others = [u for u in member_uuids if u != creator_uuid]
+            if len(others) == 1:
+                other_uuid = others[0]
+                member_uuids = [creator_uuid, other_uuid]
+                max_members = 2
+            elif len(others) == 0 and len(member_uuids) == 1 and member_uuids[0] == creator_uuid:
+                other_uuid = None
+                member_uuids = [creator_uuid]
+                max_members = 1
+            else:
+                await context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    "PRIVATE chat must have exactly 1 other participant in member_ids",
+                )
+            is_public = False
+
+        elif request.chat_type == mess_pb2.GROUP:
+            if creator_uuid not in member_uuids:
+                member_uuids = [creator_uuid] + member_uuids
+
+            is_public = bool(request.is_public)
+            max_members = (
+                int(request.max_members)
+                if request.HasField("max_members") and request.max_members > 0
+                else 200
+            )
+
+            if len(member_uuids) > max_members:
+                await context.abort(
+                    grpc.StatusCode.RESOURCE_EXHAUSTED,
+                    "max_members exceeded",
+                )
+
+        elif request.chat_type == mess_pb2.CHANNEL:
+            if creator_uuid not in member_uuids:
+                member_uuids = [creator_uuid] + member_uuids
+            else:
+                member_uuids = [creator_uuid] + [u for u in member_uuids if u != creator_uuid]
+
+            is_public = bool(request.is_public)
+            max_members = (
+                int(request.max_members)
+                if request.HasField("max_members") and request.max_members > 0
+                else 200
+            )
+
+            if len(member_uuids) > max_members:
+                await context.abort(
+                    grpc.StatusCode.RESOURCE_EXHAUSTED,
+                    "max_members exceeded",
+                )
+
+        else:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Unknown chat_type")
+
+        db_owner_role = PROTO_ROLE_TO_DB[mess_pb2.OWNER]
+        db_member_role = PROTO_ROLE_TO_DB[mess_pb2.MEMBER]
+        db_active_status = PROTO_STATUS_TO_DB[mess_pb2.ACTIVE_N]
+
+        async with AsyncSessionLocal() as session:
+            try:
+                if request.chat_type == mess_pb2.PRIVATE:
+                    if other_uuid is None:
+                        candidate_chat_id_stmt = (
+                            select(ChatMember.chat_id)
+                            .join(Chat, Chat.chat_id == ChatMember.chat_id)
+                            .where(
+                                Chat.chat_type == DbChatType.private,
+                                ChatMember.user_id == creator_uuid,
+                            )
+                            .group_by(ChatMember.chat_id)
+                            .having(func.count(func.distinct(ChatMember.user_id)) == 1)
+                            .having(func.count(ChatMember.user_id) == 1)
+                            .limit(1)
+                        )
+                    else:
+                        candidate_chat_id_stmt = (
+                            select(ChatMember.chat_id)
+                            .join(Chat, Chat.chat_id == ChatMember.chat_id)
+                            .where(
+                                Chat.chat_type == DbChatType.private,
+                                ChatMember.user_id.in_([creator_uuid, other_uuid]),
+                            )
+                            .group_by(ChatMember.chat_id)
+                            .having(func.count(func.distinct(ChatMember.user_id)) == 2)
+                            .having(func.count(ChatMember.user_id) == 2)
+                            .limit(1)
+                        )
+
+                    candidate_chat_id = (
+                        await session.execute(candidate_chat_id_stmt)
+                    ).scalar_one_or_none()
+
+                    if candidate_chat_id is not None:
+                        await session.execute(
+                            update(ChatMember)
+                            .where(
+                                ChatMember.chat_id == candidate_chat_id,
+                                ChatMember.user_id.in_(member_uuids),
+                                ChatMember.status == DbMemberStatus.left,
+                            )
+                            .values(status=DbMemberStatus.active, left_at=None)
+                        )
+                        await session.commit()
+
+                        existing_chat = (
+                            await session.execute(
+                                select(Chat).where(Chat.chat_id == candidate_chat_id)
+                            )
+                        ).scalar_one()
+
+                        resp = mess_pb2.Chat(
+                            chat_id=str(existing_chat.chat_id),
+                            chat_type=mess_pb2.PRIVATE,
+                            is_public=bool(existing_chat.is_public),
+                            max_members=int(existing_chat.max_members),
+                            created_at=_dt_to_ts(existing_chat.created_at),
+                            members_count=len(member_uuids),
+                        )
+                        if existing_chat.name is not None:
+                            resp.name = existing_chat.name
+                        if existing_chat.description is not None:
+                            resp.description = existing_chat.description
+                        if existing_chat.avatar_url is not None:
+                            resp.avatar_url = existing_chat.avatar_url
+                        if existing_chat.creator_id is not None:
+                            resp.creator_id = str(existing_chat.creator_id)
+                        return resp
+
+                q = select(User.user_id).where(User.user_id.in_(member_uuids))
+                found = (await session.execute(q)).scalars().all()
+                if len(found) != len(set(member_uuids)):
+                    found_set = {str(x) for x in found}
+                    missing = [str(u) for u in member_uuids if str(u) not in found_set]
+                    await context.abort(
+                        grpc.StatusCode.INVALID_ARGUMENT,
+                        f"Unknown user_id(s): {missing}",
+                    )
+
+                new_chat = Chat(
+                    chat_type=db_chat_type,
+                    name=request.name if request.HasField("name") else None,
+                    description=request.description if request.HasField("description") else None,
+                    avatar_url=request.avatar_url if request.HasField("avatar_url") else None,
+                    creator_id=creator_uuid,
+                    is_public=is_public,
+                    max_members=max_members,
+                )
+                session.add(new_chat)
+                await session.flush()
+
+                now = datetime.datetime.now(datetime.timezone.utc)
+                for u in member_uuids:
+                    session.add(
+                        ChatMember(
+                            chat_id=new_chat.chat_id,
+                            user_id=u,
+                            role=db_owner_role if u == creator_uuid else db_member_role,
+                            status=db_active_status,
+                            joined_at=now,
+                        )
+                    )
+
+                await session.commit()
+                await session.refresh(new_chat)
+
+                resp = mess_pb2.Chat(
+                    chat_id=str(new_chat.chat_id),
+                    chat_type=request.chat_type,
+                    is_public=bool(new_chat.is_public),
+                    max_members=int(new_chat.max_members),
+                    created_at=_dt_to_ts(new_chat.created_at),
+                    members_count=len(member_uuids),
+                )
+                if new_chat.name is not None:
+                    resp.name = new_chat.name
+                if new_chat.description is not None:
+                    resp.description = new_chat.description
+                if new_chat.avatar_url is not None:
+                    resp.avatar_url = new_chat.avatar_url
+                if new_chat.creator_id is not None:
+                    resp.creator_id = str(new_chat.creator_id)
+
+                return resp
+
+            except grpc.RpcError:
+                raise
+            except Exception as e:
+                await session.rollback()
+                await context.abort(grpc.StatusCode.INTERNAL, f"CreateChat failed: {e}")
 
     async def GetChat(self, request: mess_pb2.GetChatRequest, context) -> mess_pb2.Chat:
         current_user_uuid = await self._require_current_user_uuid(context)
@@ -8400,7 +8518,9 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid chat_id")
 
         async with AsyncSessionLocal() as session:
-            chat = (await session.execute(select(Chat).where(Chat.chat_id == chat_uuid))).scalar_one_or_none()
+            chat = (
+                await session.execute(select(Chat).where(Chat.chat_id == chat_uuid))
+            ).scalar_one_or_none()
             if not chat:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Chat not found")
 
@@ -8409,7 +8529,9 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Access denied")
             return await self._build_chat_proto(session, chat)
 
-    async def UpdateChat(self, request: mess_pb2.UpdateChatRequest, context) -> mess_pb2.Chat:
+    async def UpdateChat(
+        self, request: mess_pb2.UpdateChatRequest, context
+    ) -> mess_pb2.Chat:
         current_user_uuid = await self._require_current_user_uuid(context)
         try:
             chat_uuid = uuid.UUID(request.chat_id)
@@ -8417,12 +8539,18 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid chat_id")
 
         async with AsyncSessionLocal() as session:
-            chat = (await session.execute(select(Chat).where(Chat.chat_id == chat_uuid))).scalar_one_or_none()
+            chat = (
+                await session.execute(select(Chat).where(Chat.chat_id == chat_uuid))
+            ).scalar_one_or_none()
             if not chat:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Chat not found")
 
             actor = await self._get_actor_member(session, chat_uuid, current_user_uuid)
-            if not actor or actor.status != DbMemberStatus.active or actor.role not in {DbMemberRole.owner, DbMemberRole.admin}:
+            if (
+                not actor
+                or actor.status != DbMemberStatus.active
+                or actor.role not in {DbMemberRole.owner, DbMemberRole.admin}
+            ):
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Insufficient permissions")
 
             if request.HasField("name"):
@@ -8436,11 +8564,19 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             if request.HasField("max_members"):
                 if request.max_members <= 0:
                     await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "max_members must be > 0")
-                active_count = (await session.execute(select(func.count()).select_from(ChatMember).where(
-                    ChatMember.chat_id == chat_uuid, ChatMember.status == DbMemberStatus.active
-                ))).scalar_one()
+                active_count = (
+                    await session.execute(
+                        select(func.count()).select_from(ChatMember).where(
+                            ChatMember.chat_id == chat_uuid,
+                            ChatMember.status == DbMemberStatus.active,
+                        )
+                    )
+                ).scalar_one()
                 if request.max_members < active_count:
-                    await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "max_members is less than active members")
+                    await context.abort(
+                        grpc.StatusCode.INVALID_ARGUMENT,
+                        "max_members is less than active members",
+                    )
                 chat.max_members = request.max_members
 
             await session.commit()
@@ -8455,27 +8591,34 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid chat_id")
 
         async with AsyncSessionLocal() as session:
-            chat = (await session.execute(select(Chat).where(Chat.chat_id == chat_uuid))).scalar_one_or_none()
+            chat = (
+                await session.execute(select(Chat).where(Chat.chat_id == chat_uuid))
+            ).scalar_one_or_none()
             if not chat:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Chat not found")
+
             actor = await self._get_actor_member(session, chat_uuid, current_user_uuid)
-            if not actor or actor.status != DbMemberStatus.active or actor.role != DbMemberRole.owner:
+            if (
+                not actor
+                or actor.status != DbMemberStatus.active
+                or actor.role != DbMemberRole.owner
+            ):
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Only owner can delete chat")
-            await session.execute(
-                delete(ChatMember).where(ChatMember.chat_id == chat_uuid)
-            )
-            await session.execute(
-                delete(Chat).where(Chat.chat_id == chat_uuid)
-            )
+
+            await session.execute(delete(ChatMember).where(ChatMember.chat_id == chat_uuid))
+            await session.execute(delete(Chat).where(Chat.chat_id == chat_uuid))
             await session.commit()
             return Empty()
 
-    async def ListChats(self, request: mess_pb2.ListChatsRequest, context) -> mess_pb2.ChatsListResponse:
+    async def ListChats(
+        self, request: mess_pb2.ListChatsRequest, context
+    ) -> mess_pb2.ChatsListResponse:
         current_user_uuid = await self._require_current_user_uuid(context)
         try:
             requested_user = uuid.UUID(request.user_id)
         except Exception:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid user_id")
+
         if requested_user != current_user_uuid:
             await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Can list only own chats")
 
@@ -8486,25 +8629,40 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid page_token")
 
         async with AsyncSessionLocal() as session:
-            total = (await session.execute(select(func.count()).select_from(ChatMember).where(
-                ChatMember.user_id == current_user_uuid,
-                ChatMember.status == DbMemberStatus.active,
-            ))).scalar_one()
+            total = (
+                await session.execute(
+                    select(func.count()).select_from(ChatMember).where(
+                        ChatMember.user_id == current_user_uuid,
+                        ChatMember.status == DbMemberStatus.active,
+                    )
+                )
+            ).scalar_one()
 
-            rows = (await session.execute(
-                select(Chat)
-                .join(ChatMember, ChatMember.chat_id == Chat.chat_id)
-                .where(ChatMember.user_id == current_user_uuid, ChatMember.status == DbMemberStatus.active)
-                .order_by(Chat.created_at.desc())
-                .offset(offset)
-                .limit(page_size)
-            )).scalars().all()
+            rows = (
+                await session.execute(
+                    select(Chat)
+                    .join(ChatMember, ChatMember.chat_id == Chat.chat_id)
+                    .where(
+                        ChatMember.user_id == current_user_uuid,
+                        ChatMember.status == DbMemberStatus.active,
+                    )
+                    .order_by(Chat.created_at.desc())
+                    .offset(offset)
+                    .limit(page_size)
+                )
+            ).scalars().all()
 
             chats = [await self._build_chat_proto(session, c) for c in rows]
             next_page = str(offset + page_size) if offset + page_size < total else ""
-            return mess_pb2.ChatsListResponse(chats=chats, next_page_token=next_page, total_count=total)
+            return mess_pb2.ChatsListResponse(
+                chats=chats,
+                next_page_token=next_page,
+                total_count=total,
+            )
 
-    async def AddChatMember(self, request: mess_pb2.AddChatMemberRequest, context) -> mess_pb2.ChatMember:
+    async def AddChatMember(
+        self, request: mess_pb2.AddChatMemberRequest, context
+    ) -> mess_pb2.ChatMember:
         actor_id = await self._require_current_user_uuid(context)
         try:
             chat_uuid = uuid.UUID(request.chat_id)
@@ -8517,33 +8675,54 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Cannot add member with OWNER role")
 
         async with AsyncSessionLocal() as session:
-            chat = (await session.execute(select(Chat).where(Chat.chat_id == chat_uuid))).scalar_one_or_none()
+            chat = (
+                await session.execute(select(Chat).where(Chat.chat_id == chat_uuid))
+            ).scalar_one_or_none()
             if not chat:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Chat not found")
 
             actor = await self._get_actor_member(session, chat_uuid, actor_id)
-            if not actor or actor.status != DbMemberStatus.active or actor.role not in {DbMemberRole.owner, DbMemberRole.admin}:
+            if (
+                not actor
+                or actor.status != DbMemberStatus.active
+                or actor.role not in {DbMemberRole.owner, DbMemberRole.admin}
+            ):
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Insufficient permissions")
 
-            user_exists = (await session.execute(select(User.user_id).where(User.user_id == user_uuid))).scalar_one_or_none()
+            user_exists = (
+                await session.execute(select(User.user_id).where(User.user_id == user_uuid))
+            ).scalar_one_or_none()
             if not user_exists:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "User not found")
 
-            active_count = (await session.execute(select(func.count()).select_from(ChatMember).where(
-                ChatMember.chat_id == chat_uuid, ChatMember.status == DbMemberStatus.active
-            ))).scalar_one()
+            active_count = (
+                await session.execute(
+                    select(func.count()).select_from(ChatMember).where(
+                        ChatMember.chat_id == chat_uuid,
+                        ChatMember.status == DbMemberStatus.active,
+                    )
+                )
+            ).scalar_one()
             if active_count >= chat.max_members:
                 await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "max_members exceeded")
 
-            member = (await session.execute(select(ChatMember).where(
-                ChatMember.chat_id == chat_uuid, ChatMember.user_id == user_uuid
-            ))).scalar_one_or_none()
+            member = (
+                await session.execute(
+                    select(ChatMember).where(
+                        ChatMember.chat_id == chat_uuid,
+                        ChatMember.user_id == user_uuid,
+                    )
+                )
+            ).scalar_one_or_none()
 
             now = datetime.datetime.now(datetime.timezone.utc)
             if member:
                 if member.status == DbMemberStatus.active:
                     await context.abort(grpc.StatusCode.ALREADY_EXISTS, "User is already a member")
-                if member.status == DbMemberStatus.banned and (member.banned_until is None or member.banned_until > now):
+                if (
+                    member.status == DbMemberStatus.banned
+                    and (member.banned_until is None or member.banned_until > now)
+                ):
                     await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "User is banned")
                 member.status = DbMemberStatus.active
                 member.left_at = None
@@ -8552,14 +8731,22 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 if not member.joined_at:
                     member.joined_at = now
             else:
-                member = ChatMember(chat_id=chat_uuid, user_id=user_uuid, role=role, status=DbMemberStatus.active, joined_at=now)
+                member = ChatMember(
+                    chat_id=chat_uuid,
+                    user_id=user_uuid,
+                    role=role,
+                    status=DbMemberStatus.active,
+                    joined_at=now,
+                )
                 session.add(member)
 
             await session.commit()
             await session.refresh(member)
             return await self._build_member_proto(session, member)
 
-    async def UpdateChatMember(self, request: mess_pb2.UpdateChatMemberRequest, context) -> mess_pb2.ChatMember:
+    async def UpdateChatMember(
+        self, request: mess_pb2.UpdateChatMemberRequest, context
+    ) -> mess_pb2.ChatMember:
         actor_id = await self._require_current_user_uuid(context)
         try:
             chat_uuid = uuid.UUID(request.chat_id)
@@ -8569,12 +8756,21 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
 
         async with AsyncSessionLocal() as session:
             actor = await self._get_actor_member(session, chat_uuid, actor_id)
-            if not actor or actor.status != DbMemberStatus.active or actor.role not in {DbMemberRole.owner, DbMemberRole.admin}:
+            if (
+                not actor
+                or actor.status != DbMemberStatus.active
+                or actor.role not in {DbMemberRole.owner, DbMemberRole.admin}
+            ):
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Insufficient permissions")
 
-            member = (await session.execute(select(ChatMember).where(
-                ChatMember.chat_id == chat_uuid, ChatMember.user_id == user_uuid
-            ))).scalar_one_or_none()
+            member = (
+                await session.execute(
+                    select(ChatMember).where(
+                        ChatMember.chat_id == chat_uuid,
+                        ChatMember.user_id == user_uuid,
+                    )
+                )
+            ).scalar_one_or_none()
             if not member:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Member not found")
 
@@ -8602,13 +8798,17 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                     member.banned_until = None
 
             if request.HasField("banned_until"):
-                member.banned_until = request.banned_until.ToDatetime().astimezone(datetime.timezone.utc)
+                member.banned_until = request.banned_until.ToDatetime().astimezone(
+                    datetime.timezone.utc
+                )
 
             await session.commit()
             await session.refresh(member)
             return await self._build_member_proto(session, member)
 
-    async def RemoveChatMember(self, request: mess_pb2.RemoveChatMemberRequest, context) -> Empty:
+    async def RemoveChatMember(
+        self, request: mess_pb2.RemoveChatMemberRequest, context
+    ) -> Empty:
         actor_id = await self._require_current_user_uuid(context)
         try:
             chat_uuid = uuid.UUID(request.chat_id)
@@ -8625,9 +8825,14 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             if not is_self_leave and actor.role not in {DbMemberRole.owner, DbMemberRole.admin}:
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Insufficient permissions")
 
-            member = (await session.execute(select(ChatMember).where(
-                ChatMember.chat_id == chat_uuid, ChatMember.user_id == user_uuid
-            ))).scalar_one_or_none()
+            member = (
+                await session.execute(
+                    select(ChatMember).where(
+                        ChatMember.chat_id == chat_uuid,
+                        ChatMember.user_id == user_uuid,
+                    )
+                )
+            ).scalar_one_or_none()
             if not member:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Member not found")
             if member.role == DbMemberRole.owner and not is_self_leave:
@@ -8639,7 +8844,9 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             await session.commit()
             return Empty()
 
-    async def ListChatMembers(self, request: mess_pb2.ListChatMembersRequest, context) -> mess_pb2.ChatMembersListResponse:
+    async def ListChatMembers(
+        self, request: mess_pb2.ListChatMembersRequest, context
+    ) -> mess_pb2.ChatMembersListResponse:
         actor_id = await self._require_current_user_uuid(context)
         try:
             chat_uuid = uuid.UUID(request.chat_id)
@@ -8657,24 +8864,42 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             if not actor or actor.status != DbMemberStatus.active:
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Access denied")
 
-            total = (await session.execute(select(func.count()).select_from(ChatMember).where(ChatMember.chat_id == chat_uuid))).scalar_one()
-            rows = (await session.execute(
-                select(ChatMember)
-                .where(ChatMember.chat_id == chat_uuid)
-                .order_by(ChatMember.joined_at.asc())
-                .offset(offset)
-                .limit(page_size)
-            )).scalars().all()
+            total = (
+                await session.execute(
+                    select(func.count()).select_from(ChatMember).where(
+                        ChatMember.chat_id == chat_uuid
+                    )
+                )
+            ).scalar_one()
+            rows = (
+                await session.execute(
+                    select(ChatMember)
+                    .where(ChatMember.chat_id == chat_uuid)
+                    .order_by(ChatMember.joined_at.asc())
+                    .offset(offset)
+                    .limit(page_size)
+                )
+            ).scalars().all()
+
             members = [await self._build_member_proto(session, m) for m in rows]
             next_page = str(offset + page_size) if offset + page_size < total else ""
-            return mess_pb2.ChatMembersListResponse(members=members, next_page_token=next_page, total_count=total)
+            return mess_pb2.ChatMembersListResponse(
+                members=members,
+                next_page_token=next_page,
+                total_count=total,
+            )
 
-    async def ListChatsV2(self, request: mess_pb2.ListChatsRequestV2, context) -> mess_pb2.ChatsListResponseV2:
-        legacy = await self.ListChats(mess_pb2.ListChatsRequest(
-            user_id=request.user_id,
-            page_size=request.page_size,
-            page_token=request.page_token,
-        ), context)
+    async def ListChatsV2(
+        self, request: mess_pb2.ListChatsRequestV2, context
+    ) -> mess_pb2.ChatsListResponseV2:
+        legacy = await self.ListChats(
+            mess_pb2.ListChatsRequest(
+                user_id=request.user_id,
+                page_size=request.page_size,
+                page_token=request.page_token,
+            ),
+            context,
+        )
 
         chats = []
         for c in legacy.chats:
@@ -8698,9 +8923,15 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 summary.counters.has_mentions = False
             chats.append(summary)
 
-        return mess_pb2.ChatsListResponseV2(chats=chats, next_page_token=legacy.next_page_token, total_count=legacy.total_count)
+        return mess_pb2.ChatsListResponseV2(
+            chats=chats,
+            next_page_token=legacy.next_page_token,
+            total_count=legacy.total_count,
+        )
 
-    async def BatchGetChats(self, request: mess_pb2.BatchGetChatsRequest, context) -> mess_pb2.BatchGetChatsResponse:
+    async def BatchGetChats(
+        self, request: mess_pb2.BatchGetChatsRequest, context
+    ) -> mess_pb2.BatchGetChatsResponse:
         current_user_uuid = await self._require_current_user_uuid(context)
         chat_ids = []
         for cid in request.chat_ids:
@@ -8710,22 +8941,28 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 continue
 
         async with AsyncSessionLocal() as session:
-            rows = (await session.execute(
-                select(Chat)
-                .join(ChatMember, ChatMember.chat_id == Chat.chat_id)
-                .where(
-                    Chat.chat_id.in_(chat_ids),
-                    ChatMember.user_id == current_user_uuid,
-                    ChatMember.status == DbMemberStatus.active,
+            rows = (
+                await session.execute(
+                    select(Chat)
+                    .join(ChatMember, ChatMember.chat_id == Chat.chat_id)
+                    .where(
+                        Chat.chat_id.in_(chat_ids),
+                        ChatMember.user_id == current_user_uuid,
+                        ChatMember.status == DbMemberStatus.active,
+                    )
                 )
-            )).scalars().all()
+            ).scalars().all()
 
             chats = []
             for c in rows:
-                count = (await session.execute(select(func.count()).select_from(ChatMember).where(
-                    ChatMember.chat_id == c.chat_id,
-                    ChatMember.status == DbMemberStatus.active,
-                ))).scalar_one()
+                count = (
+                    await session.execute(
+                        select(func.count()).select_from(ChatMember).where(
+                            ChatMember.chat_id == c.chat_id,
+                            ChatMember.status == DbMemberStatus.active,
+                        )
+                    )
+                ).scalar_one()
                 title = c.name or f"Chat {str(c.chat_id)[:8]}"
                 summary = mess_pb2.ChatSummary(
                     chat_id=str(c.chat_id),
@@ -8744,37 +8981,55 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 chats.append(summary)
             return mess_pb2.BatchGetChatsResponse(chats=chats)
 
-    async def JoinChat(self, request: mess_pb2.JoinChatRequest, context) -> mess_pb2.ChatMember:
+    async def JoinChat(
+        self, request: mess_pb2.JoinChatRequest, context
+    ) -> mess_pb2.ChatMember:
         current_user_uuid = await self._require_current_user_uuid(context)
         try:
             chat_uuid = uuid.UUID(request.chat_id)
             target_user = uuid.UUID(request.user_id)
         except Exception:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid chat_id/user_id")
+
         if current_user_uuid != target_user:
             await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Can join only as current user")
 
         async with AsyncSessionLocal() as session:
-            chat = (await session.execute(select(Chat).where(Chat.chat_id == chat_uuid))).scalar_one_or_none()
+            chat = (
+                await session.execute(select(Chat).where(Chat.chat_id == chat_uuid))
+            ).scalar_one_or_none()
             if not chat:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Chat not found")
             if chat.chat_type == DbChatType.private:
                 await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "Cannot join PRIVATE chat")
 
-            member = (await session.execute(select(ChatMember).where(
-                ChatMember.chat_id == chat_uuid, ChatMember.user_id == target_user
-            ))).scalar_one_or_none()
+            member = (
+                await session.execute(
+                    select(ChatMember).where(
+                        ChatMember.chat_id == chat_uuid,
+                        ChatMember.user_id == target_user,
+                    )
+                )
+            ).scalar_one_or_none()
 
             now = datetime.datetime.now(datetime.timezone.utc)
-            if member and member.status == DbMemberStatus.banned and (member.banned_until is None or member.banned_until > now):
+            if (
+                member
+                and member.status == DbMemberStatus.banned
+                and (member.banned_until is None or member.banned_until > now)
+            ):
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "User is banned")
             if member and member.status == DbMemberStatus.active:
                 return await self._build_member_proto(session, member)
 
-            active_count = (await session.execute(select(func.count()).select_from(ChatMember).where(
-                ChatMember.chat_id == chat_uuid,
-                ChatMember.status == DbMemberStatus.active,
-            ))).scalar_one()
+            active_count = (
+                await session.execute(
+                    select(func.count()).select_from(ChatMember).where(
+                        ChatMember.chat_id == chat_uuid,
+                        ChatMember.status == DbMemberStatus.active,
+                    )
+                )
+            ).scalar_one()
             if active_count >= chat.max_members:
                 await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "max_members exceeded")
 
@@ -8783,7 +9038,13 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 member.left_at = None
                 member.banned_until = None
             else:
-                member = ChatMember(chat_id=chat_uuid, user_id=target_user, role=DbMemberRole.member, status=DbMemberStatus.active, joined_at=now)
+                member = ChatMember(
+                    chat_id=chat_uuid,
+                    user_id=target_user,
+                    role=DbMemberRole.member,
+                    status=DbMemberStatus.active,
+                    joined_at=now,
+                )
                 session.add(member)
 
             await session.commit()
@@ -8797,26 +9058,39 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             target_user = uuid.UUID(request.user_id)
         except Exception:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid chat_id/user_id")
+
         if current_user_uuid != target_user:
             await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Can leave only own membership")
 
         async with AsyncSessionLocal() as session:
-            member = (await session.execute(select(ChatMember).where(
-                ChatMember.chat_id == chat_uuid, ChatMember.user_id == target_user
-            ))).scalar_one_or_none()
+            member = (
+                await session.execute(
+                    select(ChatMember).where(
+                        ChatMember.chat_id == chat_uuid,
+                        ChatMember.user_id == target_user,
+                    )
+                )
+            ).scalar_one_or_none()
             if not member:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Member not found")
             if member.status != DbMemberStatus.active:
                 await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "Member is not active")
 
             if member.role == DbMemberRole.owner:
-                owners = (await session.execute(select(func.count()).select_from(ChatMember).where(
-                    ChatMember.chat_id == chat_uuid,
-                    ChatMember.status == DbMemberStatus.active,
-                    ChatMember.role == DbMemberRole.owner,
-                ))).scalar_one()
+                owners = (
+                    await session.execute(
+                        select(func.count()).select_from(ChatMember).where(
+                            ChatMember.chat_id == chat_uuid,
+                            ChatMember.status == DbMemberStatus.active,
+                            ChatMember.role == DbMemberRole.owner,
+                        )
+                    )
+                ).scalar_one()
                 if owners <= 1:
-                    await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "Transfer owner role before leaving")
+                    await context.abort(
+                        grpc.StatusCode.FAILED_PRECONDITION,
+                        "Transfer owner role before leaving",
+                    )
 
             member.status = DbMemberStatus.left
             member.left_at = datetime.datetime.now(datetime.timezone.utc)
@@ -8833,12 +9107,21 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
 
         async with AsyncSessionLocal() as session:
             actor = await self._get_actor_member(session, chat_uuid, current_user_uuid)
-            if not actor or actor.status != DbMemberStatus.active or actor.role not in {DbMemberRole.owner, DbMemberRole.admin}:
+            if (
+                not actor
+                or actor.status != DbMemberStatus.active
+                or actor.role not in {DbMemberRole.owner, DbMemberRole.admin}
+            ):
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Insufficient permissions")
 
-            member = (await session.execute(select(ChatMember).where(
-                ChatMember.chat_id == chat_uuid, ChatMember.user_id == target_user
-            ))).scalar_one_or_none()
+            member = (
+                await session.execute(
+                    select(ChatMember).where(
+                        ChatMember.chat_id == chat_uuid,
+                        ChatMember.user_id == target_user,
+                    )
+                )
+            ).scalar_one_or_none()
             if not member:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Member not found")
             if member.role == DbMemberRole.owner:
@@ -8859,12 +9142,21 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
 
         async with AsyncSessionLocal() as session:
             actor = await self._get_actor_member(session, chat_uuid, current_user_uuid)
-            if not actor or actor.status != DbMemberStatus.active or actor.role not in {DbMemberRole.owner, DbMemberRole.admin}:
+            if (
+                not actor
+                or actor.status != DbMemberStatus.active
+                or actor.role not in {DbMemberRole.owner, DbMemberRole.admin}
+            ):
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Insufficient permissions")
 
-            member = (await session.execute(select(ChatMember).where(
-                ChatMember.chat_id == chat_uuid, ChatMember.user_id == target_user
-            ))).scalar_one_or_none()
+            member = (
+                await session.execute(
+                    select(ChatMember).where(
+                        ChatMember.chat_id == chat_uuid,
+                        ChatMember.user_id == target_user,
+                    )
+                )
+            ).scalar_one_or_none()
             if not member:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Member not found")
             if member.role == DbMemberRole.owner:
@@ -8872,9 +9164,14 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
 
             banned_until = None
             if request.HasField("banned_until"):
-                banned_until = request.banned_until.ToDatetime().astimezone(datetime.timezone.utc)
+                banned_until = request.banned_until.ToDatetime().astimezone(
+                    datetime.timezone.utc
+                )
                 if banned_until <= datetime.datetime.now(datetime.timezone.utc):
-                    await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "banned_until must be in the future")
+                    await context.abort(
+                        grpc.StatusCode.INVALID_ARGUMENT,
+                        "banned_until must be in the future",
+                    )
 
             member.status = DbMemberStatus.banned
             member.banned_until = banned_until
@@ -8892,12 +9189,21 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
 
         async with AsyncSessionLocal() as session:
             actor = await self._get_actor_member(session, chat_uuid, current_user_uuid)
-            if not actor or actor.status != DbMemberStatus.active or actor.role not in {DbMemberRole.owner, DbMemberRole.admin}:
+            if (
+                not actor
+                or actor.status != DbMemberStatus.active
+                or actor.role not in {DbMemberRole.owner, DbMemberRole.admin}
+            ):
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Insufficient permissions")
 
-            member = (await session.execute(select(ChatMember).where(
-                ChatMember.chat_id == chat_uuid, ChatMember.user_id == target_user
-            ))).scalar_one_or_none()
+            member = (
+                await session.execute(
+                    select(ChatMember).where(
+                        ChatMember.chat_id == chat_uuid,
+                        ChatMember.user_id == target_user,
+                    )
+                )
+            ).scalar_one_or_none()
             if not member:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Member not found")
             if member.status != DbMemberStatus.banned:
@@ -9483,6 +9789,7 @@ from google.protobuf.empty_pb2 import Empty
 from google.protobuf.timestamp_pb2 import Timestamp
 from sqlalchemy import insert, select, update, delete, or_
 
+from services.access_session import require_current_user_id
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
 from security.NewPass import CreatePass
@@ -9541,11 +9848,9 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
         return str(sub) if sub else None
 
 
+
     async def _require_current_user_id(self, context) -> str:
-        user_id = await self._get_current_user_id(context)
-        if not user_id:
-            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid or expired token")
-        return user_id
+        return await require_current_user_id(context)
     
     async def CreateUser(self, request, context):
         user_data = {
@@ -9778,10 +10083,6 @@ import os
 
 
 async def get_current_user_id(context) -> str:
-    """
-    Асинхронно извлекает ID пользователя из метаданных gRPC-запроса.
-    При ошибке аутентификации вызывает context.abort().
-    """
     metadata = context.invocation_metadata() if context else None
     auth_header = None
     forwarded_user_id = None
@@ -9892,7 +10193,12 @@ from pydantic_settings import BaseSettings
 from typing import List
 
 
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
 class Settings(BaseSettings):
+    # gRPC endpoints
     """Настройки приложения."""
     DEBUG: bool = True
     ALLOWED_ORIGINS: List[str] = [
@@ -9902,18 +10208,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:8000",
     ]
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
 
-
-settings = Settings()
-
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
-class SettingsAuthGrpc(BaseSettings):
-    # gRPC endpoints
     USER_GRPC_SERVER: str = "localhost:50051"
     AUTH_GRPC_SERVER: str = "localhost:50052"
     CHAT_GRPC_SERVER: str = "localhost:50053"
@@ -9926,10 +10221,14 @@ class SettingsAuthGrpc(BaseSettings):
     JWT_ISSUER: str = "messenger-backend"
     JWT_AUDIENCE: str = "messenger-clients"
 
+    # Redis session store
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_PREFIX: str = "messenger"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
-settingsA = SettingsAuthGrpc()
+settings = Settings()
 
 ===== app/websocketSide/database.py =====
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -10635,7 +10934,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import Select, select
 
-from security import verify_token
+from session_auth import verify_access_session
 from enums import MessageType
 from database import AsyncSessionLocal
 from enums import MemberStatus as DbMemberStatus
@@ -10684,17 +10983,16 @@ def _extract_access_token(websocket: WebSocket) -> Optional[str]:
     return None
 
 
-def _resolve_user_id_from_token(websocket: WebSocket) -> Optional[str]:
+async def _resolve_user_id_from_token(websocket: WebSocket) -> Optional[str]:
     token = _extract_access_token(websocket)
     if not token:
         return None
 
-    payload = verify_token(token, token_type="access")
-    if not payload:
+    principal = await verify_access_session(token)
+    if not principal:
         return None
 
-    sub = payload.get("sub")
-    return str(sub) if sub else None
+    return principal.user_id
 
 
 async def _validate_origin(websocket: WebSocket) -> bool:
@@ -10748,9 +11046,9 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    current_user_id_raw = _resolve_user_id_from_token(websocket)
+    current_user_id_raw = await _resolve_user_id_from_token(websocket)
     if not current_user_id_raw:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Missing or invalid access token")
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Missing, invalid or revoked access token")
         return
 
     if requested_user_id and requested_user_id != current_user_id_raw:
@@ -10762,9 +11060,11 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
     except ValueError:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid user id in token")
         return
+
     redis_client: RedisClient = websocket.app.state.redis_client
     connection = await manager.connect(websocket, str(current_user_id))
     await redis_client.add_online_user(str(current_user_id))
+
     try:
         offline_messages = await redis_client.dequeue_all_offline_messages(str(current_user_id))
         for item in offline_messages:
@@ -10809,75 +11109,11 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                 )
                 continue
 
-            if envelope.event == "message.send":
-                try:
-                    payload = MessageSendPayload.model_validate(envelope.payload or {})
-                    chat_uuid = uuid.UUID(payload.chat_id)
-                except (ValidationError, ValueError) as exc:
-                    await websocket.send_json({"event": "error", "detail": str(exc)})
-                    continue
-
-                if not await _assert_user_in_chat(chat_uuid, current_user_id):
-                    await websocket.send_json({"event": "error", "detail": "Access denied for chat"})
-                    continue
-
-                if payload.type == MessageType.text and not (payload.content and payload.content.strip()):
-                    await websocket.send_json({"event": "error", "detail": "Text message content is required"})
-                    continue
-
-                saved = await _persist_message(chat_uuid, current_user_id, payload)
-                members = await _get_chat_member_ids(chat_uuid)
-
-                event_payload = {
-                    "event": "message.created",
-                    "payload": {
-                        "message_id": saved.message_id,
-                        "chat_id": str(saved.chat_id),
-                        "sender_id": str(saved.sender_id),
-                        "content": saved.content,
-                        "type": saved.type.value,
-                        "message_metadata": saved.message_metadata,
-                        "reply_to_id": saved.reply_to_id,
-                        "created_at": saved.created_at.isoformat() if saved.created_at else None,
-                        "updated_at": saved.updated_at.isoformat() if saved.updated_at else None,
-                        "is_edited": saved.is_edited,
-                        "client_message_id": payload.client_message_id,
-                    },
-                }
-
-                for member_id in members:
-                    delivered = await manager.send_to_user(member_id, event_payload)
-                    if not delivered and member_id != str(current_user_id):
-                        await redis_client.enqueue_offline_message(
-                            OfflineMessage(
-                                sender_id=str(current_user_id),
-                                recipient_id=member_id,
-                                payload=event_payload,
-                            )
-                        )
-
-                await manager.send_to_user(
-                    str(current_user_id),
-                    {
-                        "event": "message.ack",
-                        "payload": {
-                            "message_id": saved.message_id,
-                            "chat_id": str(chat_uuid),
-                            "client_message_id": payload.client_message_id,
-                        },
-                    },
-                )
     except WebSocketDisconnect:
-            logger.info("WS disconnect user_id=%s", current_user_id)
-    except Exception:
-            logger.exception("WS runtime error user_id=%s", current_user_id)
-            try:
-                await websocket.send_json({"event": "error", "detail": "internal server error"})
-            except Exception:
-                pass
+        pass
     finally:
-            await manager.disconnect(connection)
-            await redis_client.remove_online_user(str(current_user_id))
+        await manager.disconnect(connection)
+        await redis_client.remove_online_user(str(current_user_id))
 
 ===== app/websocketSide/security.py =====
 from datetime import datetime, timedelta, timezone
@@ -10887,19 +11123,19 @@ from uuid import uuid4
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
-from config import settingsA
+from config import settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
-ALGORITHM = settingsA.JWT_ALGORITHM
+ALGORITHM = settings.JWT_ALGORITHM
 
 
 def _base_claims(expires_at: datetime, token_type: str) -> Dict:
     now = datetime.now(timezone.utc)
     return {
-        "iss": settingsA.JWT_ISSUER,
-        "aud": settingsA.JWT_AUDIENCE,
+        "iss": settings.JWT_ISSUER,
+        "aud": settings.JWT_AUDIENCE,
         "iat": int(now.timestamp()),
         "nbf": int(now.timestamp()),
         "exp": int(expires_at.timestamp()),
@@ -10911,27 +11147,27 @@ def _base_claims(expires_at: datetime, token_type: str) -> Dict:
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=settingsA.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     to_encode.update(_base_claims(expire, token_type="access"))
-    return jwt.encode(to_encode, settingsA.SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 
 def create_refresh_token(data: dict) -> str:
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(days=settingsA.REFRESH_TOKEN_EXPIRE_DAYS)
+    expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode.update(_base_claims(expire, token_type="refresh"))
-    return jwt.encode(to_encode, settingsA.SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 
 def verify_token(token: str, token_type: Optional[str] = "access") -> Optional[Dict]:
     try:
         payload = jwt.decode(
             token,
-            settingsA.SECRET_KEY,
+            settings.SECRET_KEY,
             algorithms=[ALGORITHM],
-            audience=settingsA.JWT_AUDIENCE,
-            issuer=settingsA.JWT_ISSUER,
+            audience=settings.JWT_AUDIENCE,
+            issuer=settings.JWT_ISSUER,
         )
         if token_type and payload.get("type") != token_type:
             return None
@@ -10948,6 +11184,87 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
+
+===== app/websocketSide/session_auth.py =====
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import Optional
+
+import redis.asyncio as redis
+from jose import JWTError, jwt
+
+from config import settings
+
+
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_PREFIX = os.getenv("REDIS_PREFIX", "messenger")
+
+
+@dataclass(slots=True)
+class AccessSessionPrincipal:
+    user_id: str
+    session_id: str
+    payload: dict
+    access_token: str
+
+
+_redis_client: Optional[redis.Redis] = None
+
+
+def _get_redis() -> redis.Redis:
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = redis.from_url(
+            REDIS_URL,
+            decode_responses=True,
+        )
+    return _redis_client
+
+
+def _session_key(session_id: str) -> str:
+    return f"{REDIS_PREFIX}:auth:session:{session_id}"
+
+
+async def verify_access_session(token: str) -> Optional[AccessSessionPrincipal]:
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+            audience=settings.JWT_AUDIENCE,
+            issuer=settings.JWT_ISSUER,
+        )
+    except JWTError:
+        return None
+
+    if payload.get("type") != "access":
+        return None
+
+    user_id = payload.get("sub")
+    session_id = payload.get("sid")
+
+    if not user_id or not session_id:
+        return None
+
+    session_data = await _get_redis().hgetall(_session_key(str(session_id)))
+    if not session_data:
+        return None
+
+    if session_data.get("user_id") != str(user_id):
+        return None
+
+    stored_access_token = session_data.get("access_token")
+    if stored_access_token and stored_access_token != token:
+        return None
+
+    return AccessSessionPrincipal(
+        user_id=str(user_id),
+        session_id=str(session_id),
+        payload=payload,
+        access_token=token,
+    )
 
 ===== recive.py =====
 #!/usr/bin/env python

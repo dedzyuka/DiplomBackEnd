@@ -4,6 +4,7 @@ from google.protobuf.empty_pb2 import Empty
 from google.protobuf.timestamp_pb2 import Timestamp
 from sqlalchemy import insert, select, update, delete, or_
 
+from services.access_session import require_current_user_id
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
 from security.NewPass import CreatePass
@@ -62,11 +63,9 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
         return str(sub) if sub else None
 
 
+
     async def _require_current_user_id(self, context) -> str:
-        user_id = await self._get_current_user_id(context)
-        if not user_id:
-            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid or expired token")
-        return user_id
+        return await require_current_user_id(context)
     
     async def CreateUser(self, request, context):
         user_data = {
