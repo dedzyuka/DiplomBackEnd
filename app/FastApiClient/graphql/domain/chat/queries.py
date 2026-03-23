@@ -27,8 +27,9 @@ class ChatQueries:
         page: int = 1,
         page_size: int = 20,
     ) -> List[Chat]:
-        if not info.context.current_user_id:
-            raise PermissionError("Authorization required")
+        if not info.context.is_access_token_verified or not info.context.access_token:
+            raise PermissionError("Missing or invalid access token")
+
         grpc_resp = await anyio.to_thread.run_sync(
             lambda: info.context.chat_client.list_chats(
                 user_id=info.context.current_user_id,

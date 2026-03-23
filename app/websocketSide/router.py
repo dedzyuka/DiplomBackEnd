@@ -9,7 +9,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import Select, select
 
-from security import verify_token
+from session_auth import verify_access_session
 from enums import MessageType
 from database import AsyncSessionLocal
 from enums import MemberStatus as DbMemberStatus
@@ -58,17 +58,16 @@ def _extract_access_token(websocket: WebSocket) -> Optional[str]:
     return None
 
 
-def _resolve_user_id_from_token(websocket: WebSocket) -> Optional[str]:
+async def _resolve_user_id_from_token(websocket: WebSocket) -> Optional[str]:
     token = _extract_access_token(websocket)
     if not token:
         return None
 
-    payload = verify_token(token, token_type="access")
-    if not payload:
+    principal = await verify_access_session(token)
+    if not principal:
         return None
 
-    sub = payload.get("sub")
-    return str(sub) if sub else None
+    return principal.user_id
 
 
 async def _validate_origin(websocket: WebSocket) -> bool:
@@ -122,9 +121,9 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    current_user_id_raw = _resolve_user_id_from_token(websocket)
+    current_user_id_raw = await _resolve_user_id_from_token(websocket)
     if not current_user_id_raw:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Missing or invalid access token")
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Missing, invalid or revoked access token")
         return
 
     if requested_user_id and requested_user_id != current_user_id_raw:
@@ -136,9 +135,11 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
     except ValueError:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid user id in token")
         return
+
     redis_client: RedisClient = websocket.app.state.redis_client
     connection = await manager.connect(websocket, str(current_user_id))
     await redis_client.add_online_user(str(current_user_id))
+
     try:
         offline_messages = await redis_client.dequeue_all_offline_messages(str(current_user_id))
         for item in offline_messages:
@@ -183,72 +184,8 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                 )
                 continue
 
-            if envelope.event == "message.send":
-                try:
-                    payload = MessageSendPayload.model_validate(envelope.payload or {})
-                    chat_uuid = uuid.UUID(payload.chat_id)
-                except (ValidationError, ValueError) as exc:
-                    await websocket.send_json({"event": "error", "detail": str(exc)})
-                    continue
-
-                if not await _assert_user_in_chat(chat_uuid, current_user_id):
-                    await websocket.send_json({"event": "error", "detail": "Access denied for chat"})
-                    continue
-
-                if payload.type == MessageType.text and not (payload.content and payload.content.strip()):
-                    await websocket.send_json({"event": "error", "detail": "Text message content is required"})
-                    continue
-
-                saved = await _persist_message(chat_uuid, current_user_id, payload)
-                members = await _get_chat_member_ids(chat_uuid)
-
-                event_payload = {
-                    "event": "message.created",
-                    "payload": {
-                        "message_id": saved.message_id,
-                        "chat_id": str(saved.chat_id),
-                        "sender_id": str(saved.sender_id),
-                        "content": saved.content,
-                        "type": saved.type.value,
-                        "message_metadata": saved.message_metadata,
-                        "reply_to_id": saved.reply_to_id,
-                        "created_at": saved.created_at.isoformat() if saved.created_at else None,
-                        "updated_at": saved.updated_at.isoformat() if saved.updated_at else None,
-                        "is_edited": saved.is_edited,
-                        "client_message_id": payload.client_message_id,
-                    },
-                }
-
-                for member_id in members:
-                    delivered = await manager.send_to_user(member_id, event_payload)
-                    if not delivered and member_id != str(current_user_id):
-                        await redis_client.enqueue_offline_message(
-                            OfflineMessage(
-                                sender_id=str(current_user_id),
-                                recipient_id=member_id,
-                                payload=event_payload,
-                            )
-                        )
-
-                await manager.send_to_user(
-                    str(current_user_id),
-                    {
-                        "event": "message.ack",
-                        "payload": {
-                            "message_id": saved.message_id,
-                            "chat_id": str(chat_uuid),
-                            "client_message_id": payload.client_message_id,
-                        },
-                    },
-                )
     except WebSocketDisconnect:
-            logger.info("WS disconnect user_id=%s", current_user_id)
-    except Exception:
-            logger.exception("WS runtime error user_id=%s", current_user_id)
-            try:
-                await websocket.send_json({"event": "error", "detail": "internal server error"})
-            except Exception:
-                pass
+        pass
     finally:
-            await manager.disconnect(connection)
-            await redis_client.remove_online_user(str(current_user_id))
+        await manager.disconnect(connection)
+        await redis_client.remove_online_user(str(current_user_id))

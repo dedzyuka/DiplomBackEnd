@@ -1,5 +1,5 @@
 Generated from: /Users/bogdansakhno/Desktop/RabitmqTest
-Total .py files (git tracked, excluding alembic): 79
+Total .py files (git tracked, excluding alembic): 81
 
 ===== 1.py =====
 from jose import jwt
@@ -1413,7 +1413,8 @@ from typing import Optional
 from FastApiClient.graphql.context import GraphQLContext
 from FastApiClient.utils.converter import from_grpc_user
 
-from .types import PrivacySetting, User
+
+from FastApiClient.graphql.domain.user.types import PrivacySettings,PrivacyUpdateInput, User
 
 
 @strawberry.type
@@ -1488,14 +1489,50 @@ class UserMutations:
         info.context.user_client.delete_user(id, access_token=info.context.access_token)
         return True
 
+    
     @strawberry.mutation
-    async def update_privacy(self, setting: str, info: strawberry.Info[GraphQLContext]) -> PrivacySetting:
+    async def update_privacy(
+        self,
+        input: PrivacyUpdateInput,
+        info: strawberry.Info[GraphQLContext],
+    ) -> PrivacySettings:
         if not info.context.current_user_id:
             raise PermissionError("Authorization required for update_privacy")
 
+        allowed = {"everyone", "contacts", "nobody"}
+
+        def normalize(value: str | None, field_name: str) -> str | None:
+            if value is None:
+                return None
+            normalized = value.strip().lower()
+            if normalized not in allowed:
+                raise ValueError(
+                    f"{field_name} must be one of: everyone, contacts, nobody"
+                )
+            return normalized
+
+        who_can_write_me = normalize(input.who_can_write_me, "who_can_write_me")
+        who_can_add_to_groups = normalize(input.who_can_add_to_groups, "who_can_add_to_groups")
+        who_can_see_phone = normalize(input.who_can_see_phone, "who_can_see_phone")
+        who_can_see_last_seen = normalize(input.who_can_see_last_seen, "who_can_see_last_seen")
+
+        if all(
+            value is None
+            for value in (
+                who_can_write_me,
+                who_can_add_to_groups,
+                who_can_see_phone,
+                who_can_see_last_seen,
+            )
+        ):
+            raise ValueError("At least one privacy field must be provided")
+
         response = info.context.user_client.update_privacy(
-            info.context.current_user_id,
-            setting,
+            user_id=info.context.current_user_id,
+            who_can_write_me=who_can_write_me,
+            who_can_add_to_groups=who_can_add_to_groups,
+            who_can_see_phone=who_can_see_phone,
+            who_can_see_last_seen=who_can_see_last_seen,
             access_token=info.context.access_token,
         )
 
@@ -1505,7 +1542,13 @@ class UserMutations:
             3: "nobody",
             0: "unspecified",
         }
-        return PrivacySetting(setting=reverse_map.get(response.who_can_write_me, "unspecified"))
+
+        return PrivacySettings(
+            who_can_write_me=reverse_map.get(response.who_can_write_me, "unspecified"),
+            who_can_add_to_groups=reverse_map.get(response.who_can_add_to_groups, "unspecified"),
+            who_can_see_phone=reverse_map.get(response.who_can_see_phone, "unspecified"),
+            who_can_see_last_seen=reverse_map.get(response.who_can_see_last_seen, "unspecified"),
+        )
 
 ===== app/FastApiClient/graphql/domain/user/queries.py =====
 import strawberry
@@ -1545,6 +1588,7 @@ class UserQueries:
         return from_grpc_user(grpc_user)
 
 ===== app/FastApiClient/graphql/domain/user/types.py =====
+from typing import Optional
 import strawberry
 
 
@@ -1575,8 +1619,18 @@ class User:
 
 
 @strawberry.type
-class PrivacySetting:
-    setting: str
+class PrivacySettings:
+    who_can_write_me: str
+    who_can_add_to_groups: str
+    who_can_see_phone: str
+    who_can_see_last_seen: str
+
+@strawberry.input
+class PrivacyUpdateInput:
+    who_can_write_me: Optional[str] = None
+    who_can_add_to_groups: Optional[str] = None
+    who_can_see_phone: Optional[str] = None
+    who_can_see_last_seen: Optional[str] = None
 
 ===== app/FastApiClient/graphql/schema.py =====
 import strawberry
@@ -1994,14 +2048,48 @@ class UserGrpcClient(BaseGrpcClient):
         except grpc.RpcError as e:
             self._handle_rpc_error(e)
 
-    def update_privacy(self, user_id: str, setting: str, access_token: str | None = None) -> mess_pb2.PrivacySetting:
+    def update_privacy(
+    self,
+    user_id: str,
+    who_can_write_me: str | None = None,
+    who_can_add_to_groups: str | None = None,
+    who_can_see_phone: str | None = None,
+    who_can_see_last_seen: str | None = None,
+    access_token: str | None = None,
+) -> mess_pb2.PrivacySetting:
         level_map = {
             "everyone": mess_pb2.PrivacyLevel.EVERYONE,
             "contacts": mess_pb2.PrivacyLevel.CONTACTS,
             "nobody": mess_pb2.PrivacyLevel.NOBODY,
         }
-        level = level_map.get(setting.lower(), mess_pb2.PrivacyLevel.PRIVACY_LEVEL_UNSPECIFIED)
-        request = mess_pb2.UpdatePrivacyRequest(user_id=str(user_id), who_can_write_me=level)
+
+        def map_level(value: str | None, field_name: str):
+            if value is None:
+                return None
+            normalized = value.strip().lower()
+            level = level_map.get(normalized)
+            if level is None:
+                raise ValueError(
+                    f"{field_name} must be one of: everyone, contacts, nobody"
+                )
+            return level
+
+        request = mess_pb2.UpdatePrivacyRequest(user_id=str(user_id))
+
+        write_level = map_level(who_can_write_me, "who_can_write_me")
+        add_level = map_level(who_can_add_to_groups, "who_can_add_to_groups")
+        phone_level = map_level(who_can_see_phone, "who_can_see_phone")
+        last_seen_level = map_level(who_can_see_last_seen, "who_can_see_last_seen")
+
+        if write_level is not None:
+            request.who_can_write_me = write_level
+        if add_level is not None:
+            request.who_can_add_to_groups = add_level
+        if phone_level is not None:
+            request.who_can_see_phone = phone_level
+        if last_seen_level is not None:
+            request.who_can_see_last_seen = last_seen_level
+
         try:
             return self.stub.UpdatePrivacy(
                 request,
@@ -5154,6 +5242,23 @@ def from_grpc_chat(grpc_chat) -> GraphQLChat:
 
 ===== app/__init__.py =====
 # app package
+
+===== app/grpcServ/app/core/config.py =====
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    SECRET_KEY: str = "change-me-in-production"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    JWT_ISSUER: str = "messenger-backend"
+    JWT_AUDIENCE: str = "messenger-clients"
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
+settings = Settings()
 
 ===== app/grpcServ/app/database.py =====
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -9372,7 +9477,7 @@ REDIS_PREFIX = os.getenv("REDIS_PREFIX", "messenger")
 redis_client = RedisClient(redis_url=REDIS_URL, key_prefix=REDIS_PREFIX)
 
 ===== app/grpcServ/app/services/user.py =====
-import datetime
+from datetime import datetime, timezone
 import grpc
 from google.protobuf.empty_pb2 import Empty
 from google.protobuf.timestamp_pb2 import Timestamp
@@ -9593,59 +9698,56 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
             return db_user_to_proto(user)
 
     async def UpdatePrivacy(self, request, context):
-        """
-        Обновляет настройки приватности текущего пользователя.
-        Принимает user_id в запросе, но проверяет, что он совпадает с текущим.
-        """
-        current_user_id = await self._get_current_user_id(context)
-
-        # Проверяем, что пользователь имеет право редактировать privacy
-        if request.user_id != current_user_id:
-            # В будущем можно разрешить админам, но пока только владельцу
-            await context.abort(grpc.StatusCode.PERMISSION_DENIED,
-                                "You can only update your own privacy settings")
+        current_user_id = await self._require_current_user_id(context)
+        if current_user_id != str(request.user_id):
+            await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Cannot update another user's privacy settings")
 
         async with AsyncSessionLocal() as session:
-            # Пытаемся найти существующую запись privacy
-            stmt = select(PrivacySetting).where(PrivacySetting.user_id == current_user_id)
-            result = await session.execute(stmt)
+            result = await session.execute(
+                select(PrivacySetting).where(PrivacySetting.user_id == request.user_id)
+            )
             privacy = result.scalar_one_or_none()
 
-            if not privacy:
-                # Создаём новую запись с дефолтными значениями
-                privacy = PrivacySetting(user_id=current_user_id)
+            if privacy is None:
+                privacy = PrivacySetting(
+                    user_id=request.user_id,
+                    who_can_write_me="everyone",
+                    who_can_add_to_groups="everyone",
+                    who_can_see_phone="everyone",
+                    who_can_see_last_seen="everyone",
+                )
                 session.add(privacy)
-                await session.flush()  # чтобы получить объект с дефолтами
 
-            # Обновляем поля, если они переданы в запросе
-            if request.HasField("who_can_write_me"):
-                privacy.who_can_write_me = self._proto_privacy_to_db(request.who_can_write_me)
-            if request.HasField("who_can_add_to_groups"):
-                privacy.who_can_add_to_groups = self._proto_privacy_to_db(request.who_can_add_to_groups)
-            if request.HasField("who_can_see_phone"):
-                privacy.who_can_see_phone = self._proto_privacy_to_db(request.who_can_see_phone)
-            if request.HasField("who_can_see_last_seen"):
-                privacy.who_can_see_last_seen = self._proto_privacy_to_db(request.who_can_see_last_seen)
+            try:
+                if request.HasField("who_can_write_me"):
+                    privacy.who_can_write_me = self._proto_privacy_to_db(request.who_can_write_me)
+                if request.HasField("who_can_add_to_groups"):
+                    privacy.who_can_add_to_groups = self._proto_privacy_to_db(request.who_can_add_to_groups)
+                if request.HasField("who_can_see_phone"):
+                    privacy.who_can_see_phone = self._proto_privacy_to_db(request.who_can_see_phone)
+                if request.HasField("who_can_see_last_seen"):
+                    privacy.who_can_see_last_seen = self._proto_privacy_to_db(request.who_can_see_last_seen)
+            except ValueError as e:
+                await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
 
-            # Обновляем timestamp
-            privacy.updated_at = datetime.now(datetime.timezone.utc)
+            privacy.updated_at = datetime.now(timezone.utc)
 
             await session.commit()
             await session.refresh(privacy)
 
-            # Конвертируем модель БД в protobuf
             return self._db_privacy_to_proto(privacy)
 
     # Вспомогательные методы для преобразования enum
-    def _proto_privacy_to_db(self, proto_level: int):
-        """Преобразует protobuf PrivacyLevel в строку для БД."""
+    def _proto_privacy_to_db(self, proto_level: int) -> str:
         mapping = {
             mess_pb2.PrivacyLevel.EVERYONE: "everyone",
             mess_pb2.PrivacyLevel.CONTACTS: "contacts",
             mess_pb2.PrivacyLevel.NOBODY: "nobody",
         }
-        # По умолчанию возвращаем "everyone", но лучше вернуть как есть или вызывать ошибку
-        return mapping.get(proto_level, "everyone")
+        value = mapping.get(proto_level)
+        if value is None:
+            raise ValueError("Invalid privacy level")
+        return value
 
     def _db_privacy_to_proto(self, db_privacy: PrivacySetting) -> mess_pb2.PrivacySetting:
         """Конвертирует SQLAlchemy PrivacySetting в protobuf PrivacySetting."""
@@ -9668,6 +9770,62 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
             who_can_see_last_seen=map_to_proto(db_privacy.who_can_see_last_seen),
             updated_at=ts,
         )
+
+===== app/grpcServ/app/utils/auth.py =====
+import grpc
+import jwt
+import os
+
+
+async def get_current_user_id(context) -> str:
+    """
+    Асинхронно извлекает ID пользователя из метаданных gRPC-запроса.
+    При ошибке аутентификации вызывает context.abort().
+    """
+    metadata = context.invocation_metadata() if context else None
+    auth_header = None
+    forwarded_user_id = None
+
+    if metadata:
+        for item in metadata:
+            key = (item.key or "").lower()
+            if key == "authorization":
+                auth_header = item.value
+            elif key in {"x-user-id", "user-id"}:
+                forwarded_user_id = item.value
+
+    if auth_header:
+        token = auth_header.strip()
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+
+        if token:
+            try:
+                secret_key = os.getenv("SECRET_KEY", "change-me-in-production")
+                algorithm = os.getenv("JWT_ALGORITHM", "HS256")
+                issuer = os.getenv("JWT_ISSUER", "messenger-backend")
+                audience = os.getenv("JWT_AUDIENCE", "messenger-clients")
+
+                payload = jwt.decode(
+                    token,
+                    secret_key,
+                    algorithms=[algorithm],
+                    audience=audience,
+                    issuer=issuer,
+                )
+                if payload.get("type") == "access":
+                    sub = payload.get("sub")
+                    if sub:
+                        return str(sub)
+            except Exception:
+                if forwarded_user_id:
+                    return forwarded_user_id
+                await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid or expired token")
+
+    if forwarded_user_id:
+        return forwarded_user_id
+
+    await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Missing authentication credentials")
 
 ===== app/grpcServ/migrations/env.py =====
 from logging.config import fileConfig

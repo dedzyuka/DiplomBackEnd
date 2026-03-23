@@ -2,7 +2,12 @@ from pydantic_settings import BaseSettings
 from typing import List
 
 
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
 class Settings(BaseSettings):
+    # gRPC endpoints
     """Настройки приложения."""
     DEBUG: bool = True
     ALLOWED_ORIGINS: List[str] = [
@@ -12,18 +17,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:8000",
     ]
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
 
-
-settings = Settings()
-
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
-class SettingsAuthGrpc(BaseSettings):
-    # gRPC endpoints
     USER_GRPC_SERVER: str = "localhost:50051"
     AUTH_GRPC_SERVER: str = "localhost:50052"
     CHAT_GRPC_SERVER: str = "localhost:50053"
@@ -36,7 +30,11 @@ class SettingsAuthGrpc(BaseSettings):
     JWT_ISSUER: str = "messenger-backend"
     JWT_AUDIENCE: str = "messenger-clients"
 
+    # Redis session store
+    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_PREFIX: str = "messenger"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
-settingsA = SettingsAuthGrpc()
+settings = Settings()

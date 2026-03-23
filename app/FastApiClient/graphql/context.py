@@ -67,7 +67,9 @@ def _extract_bearer_token(request: Request) -> Optional[str]:
 
 
 async def get_context(request: Request) -> GraphQLContext:
+    raw_auth_header = request.headers.get("Authorization")
     token = _extract_bearer_token(request)
+
     current_user_id: Optional[str] = None
     is_access_token_verified = False
     verified_access_token: Optional[str] = None
@@ -78,9 +80,11 @@ async def get_context(request: Request) -> GraphQLContext:
             current_user_id = str(access_payload["sub"])
             is_access_token_verified = True
             verified_access_token = token
+
+    print("CTX auth_header_present =", bool(raw_auth_header))
+    print("CTX token_extracted =", bool(token))
+    print("CTX token_verified =", is_access_token_verified)
     print("CTX current_user_id =", current_user_id)
-    print("CTX access_token_verified =", is_access_token_verified)
-    print("CTX access_token_present =", bool(token))
 
     return GraphQLContext(
         request=request,
