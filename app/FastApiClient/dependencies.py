@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, AsyncGenerator
 import uuid
 
-from app.grpcServ.app.database import AsyncSessionLocal
+from app.FastApiClient.database import AsyncSessionLocal
 from app.FastApiClient.core.security import verify_token
 from app.FastApiClient.models import User
 from app.FastApiClient.schemas import UserResponse

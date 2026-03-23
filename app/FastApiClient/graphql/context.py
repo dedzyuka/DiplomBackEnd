@@ -1,12 +1,10 @@
 from typing import Optional
 
 from fastapi import Request
-from jose import JWTError, jwt
 from strawberry.fastapi import BaseContext
 
-from FastApiClient.core.config import settings
 from FastApiClient.core.security import verify_token
-from FastApiClient.grpc_clients import auth_client, user_client, chat_client  # ✅ добавили chat_client
+from FastApiClient.grpc_clients import auth_client, user_client, chat_client
 
 
 class GraphQLContext(BaseContext):
@@ -15,7 +13,7 @@ class GraphQLContext(BaseContext):
         request: Request,
         user_client,
         auth_client,
-        chat_client,  # ✅ есть в сигнатуре
+        chat_client,
         current_user_id: Optional[str] = None,
         access_token: Optional[str] = None,
         is_access_token_verified: bool = False,
@@ -23,7 +21,7 @@ class GraphQLContext(BaseContext):
         self.request = request
         self.user_client = user_client
         self.auth_client = auth_client
-        self.chat_client = chat_client  # ✅ сохраняем
+        self.chat_client = chat_client
         self.current_user_id = current_user_id
         self.access_token = access_token
         self.is_access_token_verified = is_access_token_verified
@@ -50,33 +48,6 @@ def _strip_known_prefixes(raw_token: Optional[str]) -> Optional[str]:
     return token
 
 
-def _extract_sub_unverified(token: str) -> Optional[str]:
-    """Best-effort fallback for local env mismatches (issuer/audience)."""
-    try:
-        payload = jwt.decode(
-            token,
-            settings.SECRET_KEY,
-            algorithms=[settings.JWT_ALGORITHM],
-            options={"verify_aud": False, "verify_iss": False},
-        )
-    except JWTError:
-        return None
-
-    sub = payload.get("sub")
-    return str(sub) if sub else None
-
-
-def _extract_sub_untrusted_claims(token: str) -> Optional[str]:
-    """Last-resort dev fallback when signature secret mismatches across services."""
-    try:
-        claims = jwt.get_unverified_claims(token)
-    except JWTError:
-        return None
-
-    sub = claims.get("sub")
-    return str(sub) if sub else None
-
-
 def _extract_bearer_token(request: Request) -> Optional[str]:
     auth_header = _strip_known_prefixes(request.headers.get("Authorization"))
     if auth_header:
@@ -92,10 +63,6 @@ def _extract_bearer_token(request: Request) -> Optional[str]:
         if cookie_token:
             return cookie_token
 
-    query_token = _strip_known_prefixes(request.query_params.get("access_token"))
-    if query_token:
-        return query_token
-
     return None
 
 
@@ -103,33 +70,24 @@ async def get_context(request: Request) -> GraphQLContext:
     token = _extract_bearer_token(request)
     current_user_id: Optional[str] = None
     is_access_token_verified = False
+    verified_access_token: Optional[str] = None
 
     if token:
         access_payload = verify_token(token, token_type="access")
-        any_payload = access_payload or verify_token(token, token_type=None)
-    
-        if any_payload:
-            current_user_id = any_payload.get("sub")
-            # В gRPC как Authorization отправляем только действительно access-токен.
-            is_access_token_verified = access_payload is not None
-
-            
-        else:
-            current_user_id = _extract_sub_unverified(token)
-            if not current_user_id:
-                current_user_id = _extract_sub_untrusted_claims(token)
-
-    if not current_user_id:
-        forwarded_user_id = _normalize_token(request.headers.get("X-User-Id"))
-        if forwarded_user_id:
-            current_user_id = forwarded_user_id
+        if access_payload:
+            current_user_id = str(access_payload["sub"])
+            is_access_token_verified = True
+            verified_access_token = token
+    print("CTX current_user_id =", current_user_id)
+    print("CTX access_token_verified =", is_access_token_verified)
+    print("CTX access_token_present =", bool(token))
 
     return GraphQLContext(
         request=request,
         user_client=user_client,
         auth_client=auth_client,
-        chat_client=chat_client,  # ✅ вот этого не хватало
+        chat_client=chat_client,
         current_user_id=current_user_id,
-        access_token=token if is_access_token_verified else None,
+        access_token=verified_access_token,
         is_access_token_verified=is_access_token_verified,
     )

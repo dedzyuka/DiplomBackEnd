@@ -23,11 +23,6 @@ class User:
 #         resp = user_client.SearchUsers(req)
 #         return [User.from_grpc(u) for u in resp.users]
 
-#     @strawberry.field
-#     async def my_profile(self) -> User:
-#         req = google_dot_protobuf_empty_pb2.Empty()
-#         resp = user_client.GetMyProfile(req)
-#         return User.from_grpc(resp)
 
 @strawberry.type
 class UserMutations:
@@ -36,6 +31,13 @@ class UserMutations:
         req = mess_pb2.CreateUserRequest(name=name, email=email)
         resp = UserServiceStub.CreateUser(req)
         return User.from_grpc(resp)
+    
+    @strawberry.field
+    async def my_profile(self) -> User:
+        req = mess_pb2.google.protobuf.Empty
+        resp = UserServiceStub.GetMyProfile(req)
+        return User.from_grpc(resp)
+
 
     # @strawberry.mutation
     # async def update(self, user_id: int, name: str, email: str) -> User:

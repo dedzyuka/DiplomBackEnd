@@ -13,12 +13,9 @@ class ChatGrpcClient(BaseGrpcClient):
 
     @staticmethod
     def _auth_metadata(access_token: Optional[str], current_user_id: Optional[str] = None):
-        metadata = []
         if access_token:
-            metadata.append(("authorization", f"Bearer {access_token}"))
-        if current_user_id:
-            metadata.append(("x-user-id", str(current_user_id)))
-        return tuple(metadata) if metadata else None
+            return (("authorization", f"Bearer {access_token}"),)
+        return None
 
     def create_chat(
         self,

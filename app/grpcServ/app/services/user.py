@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import grpc
 from google.protobuf.empty_pb2 import Empty
 from google.protobuf.timestamp_pb2 import Timestamp
@@ -7,10 +8,66 @@ from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
 from security.NewPass import CreatePass
 from services.converters.userConverter import db_user_to_proto
-from services.models import User
+from services.models import PrivacySetting, User
+
+from jose import JWTError, jwt
+from core.config import settings
 
 
 class UsersServicer(mess_pb2_grpc.UserServiceServicer):
+    def __init__(self):
+        self.secret_key = settings.SECRET_KEY
+        self.algorithm = settings.JWT_ALGORITHM
+        self.issuer = settings.JWT_ISSUER
+        self.audience = settings.JWT_AUDIENCE
+
+
+    async def _get_current_user_id(self, context) -> str | None:
+        metadata = context.invocation_metadata() if context else None
+        auth_header = None
+
+        if metadata:
+            for item in metadata:
+                key = (item.key or "").lower()
+                if key == "authorization":
+                    auth_header = item.value
+                    break
+
+        if not auth_header:
+            return None
+
+        token = auth_header.strip()
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+
+        try:
+            payload = jwt.decode(
+                token,
+                self.secret_key,
+                algorithms=[self.algorithm],
+                audience=self.audience,
+                issuer=self.issuer,
+            )
+        except JWTError as e:
+            print("USER TOKEN DECODE ERROR:", repr(e))
+            return None
+        except Exception as e:
+            print("USER TOKEN DECODE ERROR:", repr(e))
+            return None
+
+        if payload.get("type") != "access":
+            return None
+
+        sub = payload.get("sub")
+        return str(sub) if sub else None
+
+
+    async def _require_current_user_id(self, context) -> str:
+        user_id = await self._get_current_user_id(context)
+        if not user_id:
+            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid or expired token")
+        return user_id
+    
     async def CreateUser(self, request, context):
         user_data = {
             "nick_name": request.nick_name,
@@ -154,17 +211,83 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
             )
 
     async def GetMyProfile(self, request, context):
-        await context.abort(grpc.StatusCode.UNIMPLEMENTED, "GetMyProfile requires auth context implementation")
+        current_user_id = await self._require_current_user_id(context)  # <-- await
+        async with AsyncSessionLocal() as session:
+            user = await session.get(User, current_user_id)
+            if not user:
+                await context.abort(grpc.StatusCode.NOT_FOUND, "User not found")
+            return db_user_to_proto(user)
 
     async def UpdatePrivacy(self, request, context):
+        current_user_id = await self._require_current_user_id(context)
+        if current_user_id != str(request.user_id):
+            await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Cannot update another user's privacy settings")
+
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(PrivacySetting).where(PrivacySetting.user_id == request.user_id)
+            )
+            privacy = result.scalar_one_or_none()
+
+            if privacy is None:
+                privacy = PrivacySetting(
+                    user_id=request.user_id,
+                    who_can_write_me="everyone",
+                    who_can_add_to_groups="everyone",
+                    who_can_see_phone="everyone",
+                    who_can_see_last_seen="everyone",
+                )
+                session.add(privacy)
+
+            try:
+                if request.HasField("who_can_write_me"):
+                    privacy.who_can_write_me = self._proto_privacy_to_db(request.who_can_write_me)
+                if request.HasField("who_can_add_to_groups"):
+                    privacy.who_can_add_to_groups = self._proto_privacy_to_db(request.who_can_add_to_groups)
+                if request.HasField("who_can_see_phone"):
+                    privacy.who_can_see_phone = self._proto_privacy_to_db(request.who_can_see_phone)
+                if request.HasField("who_can_see_last_seen"):
+                    privacy.who_can_see_last_seen = self._proto_privacy_to_db(request.who_can_see_last_seen)
+            except ValueError as e:
+                await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+
+            privacy.updated_at = datetime.now(timezone.utc)
+
+            await session.commit()
+            await session.refresh(privacy)
+
+            return self._db_privacy_to_proto(privacy)
+
+    # Вспомогательные методы для преобразования enum
+    def _proto_privacy_to_db(self, proto_level: int) -> str:
+        mapping = {
+            mess_pb2.PrivacyLevel.EVERYONE: "everyone",
+            mess_pb2.PrivacyLevel.CONTACTS: "contacts",
+            mess_pb2.PrivacyLevel.NOBODY: "nobody",
+        }
+        value = mapping.get(proto_level)
+        if value is None:
+            raise ValueError("Invalid privacy level")
+        return value
+
+    def _db_privacy_to_proto(self, db_privacy: PrivacySetting) -> mess_pb2.PrivacySetting:
+        """Конвертирует SQLAlchemy PrivacySetting в protobuf PrivacySetting."""
+        def map_to_proto(level_str: str) -> int:
+            mapping = {
+                "everyone": mess_pb2.PrivacyLevel.EVERYONE,
+                "contacts": mess_pb2.PrivacyLevel.CONTACTS,
+                "nobody": mess_pb2.PrivacyLevel.NOBODY,
+            }
+            return mapping.get(level_str, mess_pb2.PrivacyLevel.PRIVACY_LEVEL_UNSPECIFIED)
+
         ts = Timestamp()
-        ts.GetCurrentTime()
+        ts.FromDatetime(db_privacy.updated_at)
 
         return mess_pb2.PrivacySetting(
-            user_id=request.user_id,
-            who_can_write_me=request.who_can_write_me or mess_pb2.PrivacyLevel.EVERYONE,
-            who_can_add_to_groups=request.who_can_add_to_groups or mess_pb2.PrivacyLevel.EVERYONE,
-            who_can_see_phone=request.who_can_see_phone or mess_pb2.PrivacyLevel.CONTACTS,
-            who_can_see_last_seen=request.who_can_see_last_seen or mess_pb2.PrivacyLevel.EVERYONE,
+            user_id=str(db_privacy.user_id),
+            who_can_write_me=map_to_proto(db_privacy.who_can_write_me),
+            who_can_add_to_groups=map_to_proto(db_privacy.who_can_add_to_groups),
+            who_can_see_phone=map_to_proto(db_privacy.who_can_see_phone),
+            who_can_see_last_seen=map_to_proto(db_privacy.who_can_see_last_seen),
             updated_at=ts,
         )

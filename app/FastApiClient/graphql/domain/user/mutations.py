@@ -4,7 +4,8 @@ from typing import Optional
 from FastApiClient.graphql.context import GraphQLContext
 from FastApiClient.utils.converter import from_grpc_user
 
-from .types import PrivacySetting, User
+
+from FastApiClient.graphql.domain.user.types import PrivacySettings,PrivacyUpdateInput, User
 
 
 @strawberry.type
@@ -79,14 +80,50 @@ class UserMutations:
         info.context.user_client.delete_user(id, access_token=info.context.access_token)
         return True
 
+    
     @strawberry.mutation
-    async def update_privacy(self, setting: str, info: strawberry.Info[GraphQLContext]) -> PrivacySetting:
+    async def update_privacy(
+        self,
+        input: PrivacyUpdateInput,
+        info: strawberry.Info[GraphQLContext],
+    ) -> PrivacySettings:
         if not info.context.current_user_id:
             raise PermissionError("Authorization required for update_privacy")
 
+        allowed = {"everyone", "contacts", "nobody"}
+
+        def normalize(value: str | None, field_name: str) -> str | None:
+            if value is None:
+                return None
+            normalized = value.strip().lower()
+            if normalized not in allowed:
+                raise ValueError(
+                    f"{field_name} must be one of: everyone, contacts, nobody"
+                )
+            return normalized
+
+        who_can_write_me = normalize(input.who_can_write_me, "who_can_write_me")
+        who_can_add_to_groups = normalize(input.who_can_add_to_groups, "who_can_add_to_groups")
+        who_can_see_phone = normalize(input.who_can_see_phone, "who_can_see_phone")
+        who_can_see_last_seen = normalize(input.who_can_see_last_seen, "who_can_see_last_seen")
+
+        if all(
+            value is None
+            for value in (
+                who_can_write_me,
+                who_can_add_to_groups,
+                who_can_see_phone,
+                who_can_see_last_seen,
+            )
+        ):
+            raise ValueError("At least one privacy field must be provided")
+
         response = info.context.user_client.update_privacy(
-            info.context.current_user_id,
-            setting,
+            user_id=info.context.current_user_id,
+            who_can_write_me=who_can_write_me,
+            who_can_add_to_groups=who_can_add_to_groups,
+            who_can_see_phone=who_can_see_phone,
+            who_can_see_last_seen=who_can_see_last_seen,
             access_token=info.context.access_token,
         )
 
@@ -96,4 +133,10 @@ class UserMutations:
             3: "nobody",
             0: "unspecified",
         }
-        return PrivacySetting(setting=reverse_map.get(response.who_can_write_me, "unspecified"))
+
+        return PrivacySettings(
+            who_can_write_me=reverse_map.get(response.who_can_write_me, "unspecified"),
+            who_can_add_to_groups=reverse_map.get(response.who_can_add_to_groups, "unspecified"),
+            who_can_see_phone=reverse_map.get(response.who_can_see_phone, "unspecified"),
+            who_can_see_last_seen=reverse_map.get(response.who_can_see_last_seen, "unspecified"),
+        )

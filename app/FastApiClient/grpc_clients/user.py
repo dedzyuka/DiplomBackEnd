@@ -2,6 +2,7 @@ import grpc
 
 from FastApiClient.core.config import settings
 from FastApiClient.protos.protobuf import mess_pb2, mess_pb2_grpc
+from google.protobuf.empty_pb2 import Empty
 
 from .base import BaseGrpcClient
 
@@ -34,8 +35,9 @@ class UserGrpcClient(BaseGrpcClient):
             self._handle_rpc_error(e)
 
     def get_my_profile(self, access_token: str | None = None) -> mess_pb2.User:
-        request = mess_pb2.Empty()
+        request = Empty()
         try:
+            
             return self.stub.GetMyProfile(
                 request,
                 timeout=5,
@@ -100,14 +102,48 @@ class UserGrpcClient(BaseGrpcClient):
         except grpc.RpcError as e:
             self._handle_rpc_error(e)
 
-    def update_privacy(self, user_id: str, setting: str, access_token: str | None = None) -> mess_pb2.PrivacySetting:
+    def update_privacy(
+    self,
+    user_id: str,
+    who_can_write_me: str | None = None,
+    who_can_add_to_groups: str | None = None,
+    who_can_see_phone: str | None = None,
+    who_can_see_last_seen: str | None = None,
+    access_token: str | None = None,
+) -> mess_pb2.PrivacySetting:
         level_map = {
             "everyone": mess_pb2.PrivacyLevel.EVERYONE,
             "contacts": mess_pb2.PrivacyLevel.CONTACTS,
             "nobody": mess_pb2.PrivacyLevel.NOBODY,
         }
-        level = level_map.get(setting.lower(), mess_pb2.PrivacyLevel.PRIVACY_LEVEL_UNSPECIFIED)
-        request = mess_pb2.UpdatePrivacyRequest(user_id=str(user_id), who_can_write_me=level)
+
+        def map_level(value: str | None, field_name: str):
+            if value is None:
+                return None
+            normalized = value.strip().lower()
+            level = level_map.get(normalized)
+            if level is None:
+                raise ValueError(
+                    f"{field_name} must be one of: everyone, contacts, nobody"
+                )
+            return level
+
+        request = mess_pb2.UpdatePrivacyRequest(user_id=str(user_id))
+
+        write_level = map_level(who_can_write_me, "who_can_write_me")
+        add_level = map_level(who_can_add_to_groups, "who_can_add_to_groups")
+        phone_level = map_level(who_can_see_phone, "who_can_see_phone")
+        last_seen_level = map_level(who_can_see_last_seen, "who_can_see_last_seen")
+
+        if write_level is not None:
+            request.who_can_write_me = write_level
+        if add_level is not None:
+            request.who_can_add_to_groups = add_level
+        if phone_level is not None:
+            request.who_can_see_phone = phone_level
+        if last_seen_level is not None:
+            request.who_can_see_last_seen = last_seen_level
+
         try:
             return self.stub.UpdatePrivacy(
                 request,

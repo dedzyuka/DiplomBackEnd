@@ -56,7 +56,8 @@ def verify_token(token: str, token_type: Optional[str] = "access") -> Optional[D
         if not payload.get("sub"):
             return None
         return payload
-    except JWTError:
+    except JWTError as e:
+        print("VERIFY_TOKEN ERROR:", repr(e))
         return None
 
 

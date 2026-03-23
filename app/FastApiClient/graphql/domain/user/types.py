@@ -1,3 +1,4 @@
+from typing import Optional
 import strawberry
 
 
@@ -28,5 +29,15 @@ class User:
 
 
 @strawberry.type
-class PrivacySetting:
-    setting: str
+class PrivacySettings:
+    who_can_write_me: str
+    who_can_add_to_groups: str
+    who_can_see_phone: str
+    who_can_see_last_seen: str
+
+@strawberry.input
+class PrivacyUpdateInput:
+    who_can_write_me: Optional[str] = None
+    who_can_add_to_groups: Optional[str] = None
+    who_can_see_phone: Optional[str] = None
+    who_can_see_last_seen: Optional[str] = None

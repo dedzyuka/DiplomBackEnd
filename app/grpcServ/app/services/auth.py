@@ -16,14 +16,16 @@ from services.converters.userConverter import db_user_to_proto
 from services.models import User,SessionEvent
 
 
+from core.config import settings
+
 class AuthServicer(mess_pb2_grpc.AuthServiceServicer):
     def __init__(self):
-        self.secret_key = os.getenv("SECRET_KEY", "change-me-in-production")
-        self.algorithm = os.getenv("JWT_ALGORITHM", "HS256")
-        self.access_ttl_minutes = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
-        self.refresh_ttl_days = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
-        self.issuer = os.getenv("JWT_ISSUER", "messenger-backend")
-        self.audience = os.getenv("JWT_AUDIENCE", "messenger-clients")
+        self.secret_key = settings.SECRET_KEY
+        self.algorithm = settings.JWT_ALGORITHM
+        self.access_ttl_minutes = settings.ACCESS_TOKEN_EXPIRE_MINUTES
+        self.refresh_ttl_days = settings.REFRESH_TOKEN_EXPIRE_DAYS
+        self.issuer = settings.JWT_ISSUER
+        self.audience = settings.JWT_AUDIENCE
 
     def _encode_token(self, sub: str, token_type: str, expires_at: datetime, session_id: str) -> str:
         now = datetime.now(timezone.utc)

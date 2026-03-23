@@ -1,8 +1,10 @@
 import strawberry
 from typing import List, Optional
+
 from FastApiClient.graphql.context import GraphQLContext
 from FastApiClient.utils.converter import from_grpc_user
 from .types import User
+
 
 @strawberry.type
 class UserQueries:
@@ -13,7 +15,6 @@ class UserQueries:
             grpc_user = info.context.user_client.get_user(id)
             return from_grpc_user(grpc_user)
         except ValueError:
-            # пользователь не найден
             return None
 
     @strawberry.field
@@ -25,9 +26,10 @@ class UserQueries:
     @strawberry.field
     async def my_profile(self, info: strawberry.Info[GraphQLContext]) -> Optional[User]:
         """Получить профиль текущего пользователя (требует аутентификации)."""
-        # В реальном проекте нужно проверить info.context.current_user_id
-        try:
-            grpc_user = info.context.user_client.get_my_profile()
-            return from_grpc_user(grpc_user)
-        except Exception:
-            return None
+        if not info.context.access_token:
+            raise PermissionError("Authorization required")
+
+        grpc_user = info.context.user_client.get_my_profile(
+            access_token=info.context.access_token
+        )
+        return from_grpc_user(grpc_user)
