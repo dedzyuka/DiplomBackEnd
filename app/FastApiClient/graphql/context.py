@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import Request
 from strawberry.fastapi import BaseContext
 
-from FastApiClient.core.security import verify_token
+from FastApiClient.core.session_auth import verify_access_session
 from FastApiClient.grpc_clients import auth_client, user_client, chat_client
 
 
@@ -15,6 +15,7 @@ class GraphQLContext(BaseContext):
         auth_client,
         chat_client,
         current_user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
         access_token: Optional[str] = None,
         is_access_token_verified: bool = False,
     ):
@@ -23,6 +24,7 @@ class GraphQLContext(BaseContext):
         self.auth_client = auth_client
         self.chat_client = chat_client
         self.current_user_id = current_user_id
+        self.session_id = session_id
         self.access_token = access_token
         self.is_access_token_verified = is_access_token_verified
 
@@ -67,24 +69,20 @@ def _extract_bearer_token(request: Request) -> Optional[str]:
 
 
 async def get_context(request: Request) -> GraphQLContext:
-    raw_auth_header = request.headers.get("Authorization")
     token = _extract_bearer_token(request)
 
     current_user_id: Optional[str] = None
+    session_id: Optional[str] = None
     is_access_token_verified = False
     verified_access_token: Optional[str] = None
 
     if token:
-        access_payload = verify_token(token, token_type="access")
-        if access_payload:
-            current_user_id = str(access_payload["sub"])
+        principal = await verify_access_session(token)
+        if principal:
+            current_user_id = principal.user_id
+            session_id = principal.session_id
             is_access_token_verified = True
-            verified_access_token = token
-
-    print("CTX auth_header_present =", bool(raw_auth_header))
-    print("CTX token_extracted =", bool(token))
-    print("CTX token_verified =", is_access_token_verified)
-    print("CTX current_user_id =", current_user_id)
+            verified_access_token = principal.access_token
 
     return GraphQLContext(
         request=request,
@@ -92,6 +90,7 @@ async def get_context(request: Request) -> GraphQLContext:
         auth_client=auth_client,
         chat_client=chat_client,
         current_user_id=current_user_id,
+        session_id=session_id,
         access_token=verified_access_token,
         is_access_token_verified=is_access_token_verified,
     )

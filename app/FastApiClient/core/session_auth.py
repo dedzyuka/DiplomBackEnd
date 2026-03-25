@@ -59,11 +59,9 @@ async def verify_access_session(token: str) -> Optional[AccessSessionPrincipal]:
     if not session_data:
         return None
 
-    # сессия должна принадлежать тому же пользователю
     if session_data.get("user_id") != str(user_id):
         return None
 
-    # пока auth service хранит access_token в Redis — используем это как жёсткую проверку
     stored_access_token = session_data.get("access_token")
     if stored_access_token and stored_access_token != token:
         return None

@@ -1,72 +1,22 @@
 from datetime import datetime, timezone
+
 import grpc
 from google.protobuf.empty_pb2 import Empty
 from google.protobuf.timestamp_pb2 import Timestamp
-from sqlalchemy import insert, select, update, delete, or_
+from sqlalchemy import delete, insert, or_, select, update
 
-from services.access_session import require_current_user_id
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
 from security.NewPass import CreatePass
+from services.access_session import require_current_user_id
 from services.converters.userConverter import db_user_to_proto
 from services.models import PrivacySetting, User
 
-from jose import JWTError, jwt
-from core.config import settings
-
 
 class UsersServicer(mess_pb2_grpc.UserServiceServicer):
-    def __init__(self):
-        self.secret_key = settings.SECRET_KEY
-        self.algorithm = settings.JWT_ALGORITHM
-        self.issuer = settings.JWT_ISSUER
-        self.audience = settings.JWT_AUDIENCE
-
-
-    async def _get_current_user_id(self, context) -> str | None:
-        metadata = context.invocation_metadata() if context else None
-        auth_header = None
-
-        if metadata:
-            for item in metadata:
-                key = (item.key or "").lower()
-                if key == "authorization":
-                    auth_header = item.value
-                    break
-
-        if not auth_header:
-            return None
-
-        token = auth_header.strip()
-        if token.lower().startswith("bearer "):
-            token = token[7:].strip()
-
-        try:
-            payload = jwt.decode(
-                token,
-                self.secret_key,
-                algorithms=[self.algorithm],
-                audience=self.audience,
-                issuer=self.issuer,
-            )
-        except JWTError as e:
-            print("USER TOKEN DECODE ERROR:", repr(e))
-            return None
-        except Exception as e:
-            print("USER TOKEN DECODE ERROR:", repr(e))
-            return None
-
-        if payload.get("type") != "access":
-            return None
-
-        sub = payload.get("sub")
-        return str(sub) if sub else None
-
-
-
     async def _require_current_user_id(self, context) -> str:
         return await require_current_user_id(context)
-    
+
     async def CreateUser(self, request, context):
         user_data = {
             "nick_name": request.nick_name,
@@ -120,6 +70,13 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
         if not user_id:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "user_id is required")
 
+        current_user_id = await self._require_current_user_id(context)
+        if current_user_id != str(user_id):
+            await context.abort(
+                grpc.StatusCode.PERMISSION_DENIED,
+                "Cannot update another user",
+            )
+
         update_data = {}
         if request.nick_name:
             update_data["nick_name"] = request.nick_name
@@ -146,7 +103,12 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
                         await context.abort(grpc.StatusCode.NOT_FOUND, "User not found")
                     return db_user_to_proto(user)
 
-                stmt = update(User).where(User.user_id == user_id).values(**update_data).returning(User)
+                stmt = (
+                    update(User)
+                    .where(User.user_id == user_id)
+                    .values(**update_data)
+                    .returning(User)
+                )
                 result = await session.execute(stmt)
                 updated_user = result.scalar_one_or_none()
                 if not updated_user:
@@ -162,6 +124,13 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
         user_id = request.user_id
         if not user_id:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "user_id is required")
+
+        current_user_id = await self._require_current_user_id(context)
+        if current_user_id != str(user_id):
+            await context.abort(
+                grpc.StatusCode.PERMISSION_DENIED,
+                "Cannot delete another user",
+            )
 
         async with AsyncSessionLocal() as session:
             stmt = delete(User).where(User.user_id == user_id)
@@ -210,7 +179,8 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
             )
 
     async def GetMyProfile(self, request, context):
-        current_user_id = await self._require_current_user_id(context)  # <-- await
+        current_user_id = await self._require_current_user_id(context)
+
         async with AsyncSessionLocal() as session:
             user = await session.get(User, current_user_id)
             if not user:
@@ -220,7 +190,10 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
     async def UpdatePrivacy(self, request, context):
         current_user_id = await self._require_current_user_id(context)
         if current_user_id != str(request.user_id):
-            await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Cannot update another user's privacy settings")
+            await context.abort(
+                grpc.StatusCode.PERMISSION_DENIED,
+                "Cannot update another user's privacy settings",
+            )
 
         async with AsyncSessionLocal() as session:
             result = await session.execute(
@@ -257,7 +230,6 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
 
             return self._db_privacy_to_proto(privacy)
 
-    # Вспомогательные методы для преобразования enum
     def _proto_privacy_to_db(self, proto_level: int) -> str:
         mapping = {
             mess_pb2.PrivacyLevel.EVERYONE: "everyone",
@@ -270,7 +242,6 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
         return value
 
     def _db_privacy_to_proto(self, db_privacy: PrivacySetting) -> mess_pb2.PrivacySetting:
-        """Конвертирует SQLAlchemy PrivacySetting в protobuf PrivacySetting."""
         def map_to_proto(level_str: str) -> int:
             mapping = {
                 "everyone": mess_pb2.PrivacyLevel.EVERYONE,
