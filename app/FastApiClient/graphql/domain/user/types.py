@@ -1,4 +1,5 @@
 from typing import Optional
+
 import strawberry
 
 
@@ -14,17 +15,16 @@ class User:
     avatar_url: str
     bio: str
     last_seen: str
-    is_online: str
+    is_online: bool
     status: str
-    email_verified: str
-    phone_verified: str
-    is_admin: str
+    email_verified: bool
+    phone_verified: bool
+    is_admin: bool
     created_at: str
     updated_at: str
 
     @strawberry.field
     def id(self) -> str:
-        """Backward-compatible GraphQL alias for `user_id`."""
         return self.user_id
 
 
@@ -34,6 +34,7 @@ class PrivacySettings:
     who_can_add_to_groups: str
     who_can_see_phone: str
     who_can_see_last_seen: str
+
 
 @strawberry.input
 class PrivacyUpdateInput:

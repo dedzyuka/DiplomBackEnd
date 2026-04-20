@@ -648,81 +648,6 @@ settings = Settings()
 ===== app/FastApiClient/core/security.py =====
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional
-
-import redis.asyncio as redis
-from jose import JWTError, jwt
-
-from FastApiClient.core.config import settings
-
-
-@dataclass(slots=True)
-class AccessSessionPrincipal:
-    user_id: str
-    session_id: str
-    payload: dict
-    access_token: str
-
-
-_redis_client: Optional[redis.Redis] = None
-
-
-def _get_redis() -> redis.Redis:
-    global _redis_client
-    if _redis_client is None:
-        _redis_client = redis.from_url(
-            settings.REDIS_URL,
-            decode_responses=True,
-        )
-    return _redis_client
-
-
-def _session_key(session_id: str) -> str:
-    return f"{settings.REDIS_PREFIX}:auth:session:{session_id}"
-
-
-async def verify_access_session(token: str) -> Optional[AccessSessionPrincipal]:
-    try:
-        payload = jwt.decode(
-            token,
-            settings.SECRET_KEY,
-            algorithms=[settings.JWT_ALGORITHM],
-            audience=settings.JWT_AUDIENCE,
-            issuer=settings.JWT_ISSUER,
-        )
-    except JWTError:
-        return None
-
-    if payload.get("type") != "access":
-        return None
-
-    user_id = payload.get("sub")
-    session_id = payload.get("sid")
-
-    if not user_id or not session_id:
-        return None
-
-    session_data = await _get_redis().hgetall(_session_key(str(session_id)))
-    if not session_data:
-        return None
-
-    # сессия должна принадлежать тому же пользователю
-    if session_data.get("user_id") != str(user_id):
-        return None
-
-    # пока auth service хранит access_token в Redis — используем это как жёсткую проверку
-    stored_access_token = session_data.get("access_token")
-    if stored_access_token and stored_access_token != token:
-        return None
-
-    return AccessSessionPrincipal(
-        user_id=str(user_id),
-        session_id=str(session_id),
-        payload=payload,
-        access_token=token,
-    )
-
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 from uuid import uuid4
@@ -730,11 +655,10 @@ from uuid import uuid4
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
+from FastApiClient.core.config import settings
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
 ALGORITHM = settings.JWT_ALGORITHM
 
 
@@ -776,13 +700,16 @@ def verify_token(token: str, token_type: Optional[str] = "access") -> Optional[D
             audience=settings.JWT_AUDIENCE,
             issuer=settings.JWT_ISSUER,
         )
-        if token_type and payload.get("type") != token_type:
-            return None
-        if not payload.get("sub"):
-            return None
-        return payload
     except JWTError:
         return None
+
+    if token_type and payload.get("type") != token_type:
+        return None
+
+    if not payload.get("sub"):
+        return None
+
+    return payload
 
 
 def hash_password(password: str) -> str:
@@ -854,11 +781,9 @@ async def verify_access_session(token: str) -> Optional[AccessSessionPrincipal]:
     if not session_data:
         return None
 
-    # сессия должна принадлежать тому же пользователю
     if session_data.get("user_id") != str(user_id):
         return None
 
-    # пока auth service хранит access_token в Redis — используем это как жёсткую проверку
     stored_access_token = session_data.get("access_token")
     if stored_access_token and stored_access_token != token:
         return None
@@ -1180,7 +1105,7 @@ from typing import Optional
 from fastapi import Request
 from strawberry.fastapi import BaseContext
 
-from FastApiClient.core.security import verify_token
+from FastApiClient.core.session_auth import verify_access_session
 from FastApiClient.grpc_clients import auth_client, user_client, chat_client
 
 
@@ -1192,6 +1117,7 @@ class GraphQLContext(BaseContext):
         auth_client,
         chat_client,
         current_user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
         access_token: Optional[str] = None,
         is_access_token_verified: bool = False,
     ):
@@ -1200,6 +1126,7 @@ class GraphQLContext(BaseContext):
         self.auth_client = auth_client
         self.chat_client = chat_client
         self.current_user_id = current_user_id
+        self.session_id = session_id
         self.access_token = access_token
         self.is_access_token_verified = is_access_token_verified
 
@@ -1244,24 +1171,20 @@ def _extract_bearer_token(request: Request) -> Optional[str]:
 
 
 async def get_context(request: Request) -> GraphQLContext:
-    raw_auth_header = request.headers.get("Authorization")
     token = _extract_bearer_token(request)
 
     current_user_id: Optional[str] = None
+    session_id: Optional[str] = None
     is_access_token_verified = False
     verified_access_token: Optional[str] = None
 
     if token:
-        access_payload = verify_token(token, token_type="access")
-        if access_payload:
-            current_user_id = str(access_payload["sub"])
+        principal = await verify_access_session(token)
+        if principal:
+            current_user_id = principal.user_id
+            session_id = principal.session_id
             is_access_token_verified = True
-            verified_access_token = token
-
-    print("CTX auth_header_present =", bool(raw_auth_header))
-    print("CTX token_extracted =", bool(token))
-    print("CTX token_verified =", is_access_token_verified)
-    print("CTX current_user_id =", current_user_id)
+            verified_access_token = principal.access_token
 
     return GraphQLContext(
         request=request,
@@ -1269,6 +1192,7 @@ async def get_context(request: Request) -> GraphQLContext:
         auth_client=auth_client,
         chat_client=chat_client,
         current_user_id=current_user_id,
+        session_id=session_id,
         access_token=verified_access_token,
         is_access_token_verified=is_access_token_verified,
     )
@@ -1713,8 +1637,9 @@ class UserMutations:
         )
 
 ===== app/FastApiClient/graphql/domain/user/queries.py =====
-import strawberry
 from typing import List, Optional
+
+import strawberry
 
 from FastApiClient.graphql.context import GraphQLContext
 from FastApiClient.utils.converter import from_grpc_user
@@ -1724,7 +1649,7 @@ from .types import User
 @strawberry.type
 class UserQueries:
     @strawberry.field
-    async def get(self, id: int, info: strawberry.Info[GraphQLContext]) -> Optional[User]:
+    async def get(self, id: str, info: strawberry.Info[GraphQLContext]) -> Optional[User]:
         """Получить пользователя по ID."""
         try:
             grpc_user = info.context.user_client.get_user(id)
@@ -1733,14 +1658,20 @@ class UserQueries:
             return None
 
     @strawberry.field
-    async def search(self, query: str, page: int = 1, *, info: strawberry.Info[GraphQLContext]) -> List[User]:
-        """Поиск пользователей по имени."""
+    async def search(
+        self,
+        query: str,
+        page: int = 1,
+        *,
+        info: strawberry.Info[GraphQLContext],
+    ) -> List[User]:
+        """Поиск пользователей."""
         response = info.context.user_client.search_users(query, page)
         return [from_grpc_user(u) for u in response.users]
 
     @strawberry.field
     async def my_profile(self, info: strawberry.Info[GraphQLContext]) -> Optional[User]:
-        """Получить профиль текущего пользователя (требует аутентификации)."""
+        """Получить профиль текущего пользователя."""
         if not info.context.access_token:
             raise PermissionError("Authorization required")
 
@@ -1751,6 +1682,7 @@ class UserQueries:
 
 ===== app/FastApiClient/graphql/domain/user/types.py =====
 from typing import Optional
+
 import strawberry
 
 
@@ -1766,17 +1698,16 @@ class User:
     avatar_url: str
     bio: str
     last_seen: str
-    is_online: str
+    is_online: bool
     status: str
-    email_verified: str
-    phone_verified: str
-    is_admin: str
+    email_verified: bool
+    phone_verified: bool
+    is_admin: bool
     created_at: str
     updated_at: str
 
     @strawberry.field
     def id(self) -> str:
-        """Backward-compatible GraphQL alias for `user_id`."""
         return self.user_id
 
 
@@ -1786,6 +1717,7 @@ class PrivacySettings:
     who_can_add_to_groups: str
     who_can_see_phone: str
     who_can_see_last_seen: str
+
 
 @strawberry.input
 class PrivacyUpdateInput:
@@ -5355,15 +5287,34 @@ class MessageWithReactions(MessageResponse):
 
 ===== app/FastApiClient/utils/converter.py =====
 from datetime import timezone
-from FastApiClient.protos.protobuf import mess_pb2
-from FastApiClient.graphql.domain.user.types import User as GraphQLUser
+
 from FastApiClient.graphql.domain.chat.types import Chat as GraphQLChat
+from FastApiClient.graphql.domain.user.types import User as GraphQLUser
+from FastApiClient.protos.protobuf import mess_pb2
+
+
+def _ts_to_iso(ts) -> str:
+    if ts is None:
+        return ""
+
+    try:
+        dt = ts.ToDatetime()
+    except Exception:
+        return ""
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+
+    return dt.isoformat()
+
 
 def from_grpc_user(grpc_user: mess_pb2.User) -> GraphQLUser:
     """Преобразует protobuf User в GraphQL User."""
     return GraphQLUser(
         user_id=grpc_user.user_id,
-        nick_name=grpc_user.nick_name,          # было name -> исправлено
+        nick_name=grpc_user.nick_name,
         first_name=grpc_user.first_name,
         last_name=grpc_user.last_name,
         middle_name=grpc_user.middle_name,
@@ -5371,34 +5322,31 @@ def from_grpc_user(grpc_user: mess_pb2.User) -> GraphQLUser:
         phone=grpc_user.phone,
         avatar_url=grpc_user.avatar_url,
         bio=grpc_user.bio,
-        last_seen=str(grpc_user.last_seen.seconds),  # преобразуем в строку
-        is_online=grpc_user.is_online,
-        status=str(grpc_user.status),                 # если статус enum, возможно нужно .name или .value
-        email_verified=grpc_user.email_verified,
-        phone_verified=grpc_user.phone_verified,
-        is_admin=grpc_user.is_admin,
-        created_at=str(grpc_user.created_at.seconds),
-        updated_at=str(grpc_user.updated_at.seconds),
+        last_seen=_ts_to_iso(grpc_user.last_seen),
+        is_online=bool(grpc_user.is_online),
+        status=str(grpc_user.status),
+        email_verified=bool(grpc_user.email_verified),
+        phone_verified=bool(grpc_user.phone_verified),
+        is_admin=bool(grpc_user.is_admin),
+        created_at=_ts_to_iso(grpc_user.created_at),
+        updated_at=_ts_to_iso(grpc_user.updated_at),
     )
+
+
 def from_grpc_chat(grpc_chat) -> GraphQLChat:
-    # grpc_chat.created_at: google.protobuf.Timestamp
-    # В python protobuf у Timestamp есть .ToDatetime()
     dt = grpc_chat.created_at.ToDatetime().astimezone(timezone.utc)
     created_iso = dt.isoformat()
 
     return GraphQLChat(
         chat_id=str(grpc_chat.chat_id),
-        chat_type=str(grpc_chat.chat_type),  # можно маппить в "private/group/channel" при желании
-
+        chat_type=str(grpc_chat.chat_type),
         name=getattr(grpc_chat, "name", None) if grpc_chat.HasField("name") else None,
         description=getattr(grpc_chat, "description", None) if grpc_chat.HasField("description") else None,
         avatar_url=getattr(grpc_chat, "avatar_url", None) if grpc_chat.HasField("avatar_url") else None,
         creator_id=getattr(grpc_chat, "creator_id", None) if grpc_chat.HasField("creator_id") else None,
-
         is_public=bool(grpc_chat.is_public),
         max_members=int(grpc_chat.max_members),
         created_at=created_iso,
-
         members_count=int(getattr(grpc_chat, "members_count", 0)),
     )
 
@@ -9885,74 +9833,24 @@ redis_client = RedisClient(redis_url=REDIS_URL, key_prefix=REDIS_PREFIX)
 
 ===== app/grpcServ/app/services/user.py =====
 from datetime import datetime, timezone
+
 import grpc
 from google.protobuf.empty_pb2 import Empty
 from google.protobuf.timestamp_pb2 import Timestamp
-from sqlalchemy import insert, select, update, delete, or_
+from sqlalchemy import delete, insert, or_, select, update
 
-from services.access_session import require_current_user_id
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
 from security.NewPass import CreatePass
+from services.access_session import require_current_user_id
 from services.converters.userConverter import db_user_to_proto
 from services.models import PrivacySetting, User
 
-from jose import JWTError, jwt
-from core.config import settings
-
 
 class UsersServicer(mess_pb2_grpc.UserServiceServicer):
-    def __init__(self):
-        self.secret_key = settings.SECRET_KEY
-        self.algorithm = settings.JWT_ALGORITHM
-        self.issuer = settings.JWT_ISSUER
-        self.audience = settings.JWT_AUDIENCE
-
-
-    async def _get_current_user_id(self, context) -> str | None:
-        metadata = context.invocation_metadata() if context else None
-        auth_header = None
-
-        if metadata:
-            for item in metadata:
-                key = (item.key or "").lower()
-                if key == "authorization":
-                    auth_header = item.value
-                    break
-
-        if not auth_header:
-            return None
-
-        token = auth_header.strip()
-        if token.lower().startswith("bearer "):
-            token = token[7:].strip()
-
-        try:
-            payload = jwt.decode(
-                token,
-                self.secret_key,
-                algorithms=[self.algorithm],
-                audience=self.audience,
-                issuer=self.issuer,
-            )
-        except JWTError as e:
-            print("USER TOKEN DECODE ERROR:", repr(e))
-            return None
-        except Exception as e:
-            print("USER TOKEN DECODE ERROR:", repr(e))
-            return None
-
-        if payload.get("type") != "access":
-            return None
-
-        sub = payload.get("sub")
-        return str(sub) if sub else None
-
-
-
     async def _require_current_user_id(self, context) -> str:
         return await require_current_user_id(context)
-    
+
     async def CreateUser(self, request, context):
         user_data = {
             "nick_name": request.nick_name,
@@ -10006,6 +9904,13 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
         if not user_id:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "user_id is required")
 
+        current_user_id = await self._require_current_user_id(context)
+        if current_user_id != str(user_id):
+            await context.abort(
+                grpc.StatusCode.PERMISSION_DENIED,
+                "Cannot update another user",
+            )
+
         update_data = {}
         if request.nick_name:
             update_data["nick_name"] = request.nick_name
@@ -10032,7 +9937,12 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
                         await context.abort(grpc.StatusCode.NOT_FOUND, "User not found")
                     return db_user_to_proto(user)
 
-                stmt = update(User).where(User.user_id == user_id).values(**update_data).returning(User)
+                stmt = (
+                    update(User)
+                    .where(User.user_id == user_id)
+                    .values(**update_data)
+                    .returning(User)
+                )
                 result = await session.execute(stmt)
                 updated_user = result.scalar_one_or_none()
                 if not updated_user:
@@ -10048,6 +9958,13 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
         user_id = request.user_id
         if not user_id:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "user_id is required")
+
+        current_user_id = await self._require_current_user_id(context)
+        if current_user_id != str(user_id):
+            await context.abort(
+                grpc.StatusCode.PERMISSION_DENIED,
+                "Cannot delete another user",
+            )
 
         async with AsyncSessionLocal() as session:
             stmt = delete(User).where(User.user_id == user_id)
@@ -10096,7 +10013,8 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
             )
 
     async def GetMyProfile(self, request, context):
-        current_user_id = await self._require_current_user_id(context)  # <-- await
+        current_user_id = await self._require_current_user_id(context)
+
         async with AsyncSessionLocal() as session:
             user = await session.get(User, current_user_id)
             if not user:
@@ -10106,7 +10024,10 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
     async def UpdatePrivacy(self, request, context):
         current_user_id = await self._require_current_user_id(context)
         if current_user_id != str(request.user_id):
-            await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Cannot update another user's privacy settings")
+            await context.abort(
+                grpc.StatusCode.PERMISSION_DENIED,
+                "Cannot update another user's privacy settings",
+            )
 
         async with AsyncSessionLocal() as session:
             result = await session.execute(
@@ -10143,7 +10064,6 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
 
             return self._db_privacy_to_proto(privacy)
 
-    # Вспомогательные методы для преобразования enum
     def _proto_privacy_to_db(self, proto_level: int) -> str:
         mapping = {
             mess_pb2.PrivacyLevel.EVERYONE: "everyone",
@@ -10156,7 +10076,6 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
         return value
 
     def _db_privacy_to_proto(self, db_privacy: PrivacySetting) -> mess_pb2.PrivacySetting:
-        """Конвертирует SQLAlchemy PrivacySetting в protobuf PrivacySetting."""
         def map_to_proto(level_str: str) -> int:
             mapping = {
                 "everyone": mess_pb2.PrivacyLevel.EVERYONE,
