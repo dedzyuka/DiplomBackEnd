@@ -4,7 +4,7 @@ import grpc
 import warnings
 
 from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
-from . import mess_pb2 as mess__pb2
+from FastApiClient.protos.protobuf import mess_pb2 as mess__pb2
 
 GRPC_GENERATED_VERSION = '1.78.0'
 GRPC_VERSION = grpc.__version__
@@ -386,6 +386,26 @@ class AuthServiceStub(object):
                 request_serializer=mess__pb2.RefreshTokenRequest.SerializeToString,
                 response_deserializer=mess__pb2.LoginResponse.FromString,
                 _registered_method=True)
+        self.ListSessions = channel.unary_unary(
+                '/messenger.AuthService/ListSessions',
+                request_serializer=mess__pb2.ListSessionsRequest.SerializeToString,
+                response_deserializer=mess__pb2.ListSessionsResponse.FromString,
+                _registered_method=True)
+        self.LogoutCurrentSession = channel.unary_unary(
+                '/messenger.AuthService/LogoutCurrentSession',
+                request_serializer=mess__pb2.LogoutCurrentSessionRequest.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                _registered_method=True)
+        self.RevokeSession = channel.unary_unary(
+                '/messenger.AuthService/RevokeSession',
+                request_serializer=mess__pb2.RevokeSessionRequest.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                _registered_method=True)
+        self.LogoutAllOtherSessions = channel.unary_unary(
+                '/messenger.AuthService/LogoutAllOtherSessions',
+                request_serializer=mess__pb2.LogoutAllOtherSessionsRequest.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                _registered_method=True)
 
 
 class AuthServiceServicer(object):
@@ -409,6 +429,30 @@ class AuthServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListSessions(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def LogoutCurrentSession(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RevokeSession(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def LogoutAllOtherSessions(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_AuthServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -426,6 +470,26 @@ def add_AuthServiceServicer_to_server(servicer, server):
                     servicer.RefreshToken,
                     request_deserializer=mess__pb2.RefreshTokenRequest.FromString,
                     response_serializer=mess__pb2.LoginResponse.SerializeToString,
+            ),
+            'ListSessions': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListSessions,
+                    request_deserializer=mess__pb2.ListSessionsRequest.FromString,
+                    response_serializer=mess__pb2.ListSessionsResponse.SerializeToString,
+            ),
+            'LogoutCurrentSession': grpc.unary_unary_rpc_method_handler(
+                    servicer.LogoutCurrentSession,
+                    request_deserializer=mess__pb2.LogoutCurrentSessionRequest.FromString,
+                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            ),
+            'RevokeSession': grpc.unary_unary_rpc_method_handler(
+                    servicer.RevokeSession,
+                    request_deserializer=mess__pb2.RevokeSessionRequest.FromString,
+                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            ),
+            'LogoutAllOtherSessions': grpc.unary_unary_rpc_method_handler(
+                    servicer.LogoutAllOtherSessions,
+                    request_deserializer=mess__pb2.LogoutAllOtherSessionsRequest.FromString,
+                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -509,6 +573,114 @@ class AuthService(object):
             '/messenger.AuthService/RefreshToken',
             mess__pb2.RefreshTokenRequest.SerializeToString,
             mess__pb2.LoginResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListSessions(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.AuthService/ListSessions',
+            mess__pb2.ListSessionsRequest.SerializeToString,
+            mess__pb2.ListSessionsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def LogoutCurrentSession(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.AuthService/LogoutCurrentSession',
+            mess__pb2.LogoutCurrentSessionRequest.SerializeToString,
+            google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RevokeSession(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.AuthService/RevokeSession',
+            mess__pb2.RevokeSessionRequest.SerializeToString,
+            google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def LogoutAllOtherSessions(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.AuthService/LogoutAllOtherSessions',
+            mess__pb2.LogoutAllOtherSessionsRequest.SerializeToString,
+            google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,
             channel_credentials,
             insecure,

@@ -28,6 +28,21 @@ class GraphQLContext(BaseContext):
         self.access_token = access_token
         self.is_access_token_verified = is_access_token_verified
 
+    def require_access_token(self) -> str:
+        if not self.is_access_token_verified or not self.access_token:
+            raise PermissionError("Missing or invalid access token")
+        return self.access_token
+
+    def require_user_id(self) -> str:
+        if not self.is_access_token_verified or not self.current_user_id:
+            raise PermissionError("Authorization required")
+        return self.current_user_id
+
+    def require_session_id(self) -> str:
+        if not self.is_access_token_verified or not self.session_id:
+            raise PermissionError("Authorization required")
+        return self.session_id
+
 
 def _normalize_token(raw: Optional[str]) -> Optional[str]:
     if not raw:

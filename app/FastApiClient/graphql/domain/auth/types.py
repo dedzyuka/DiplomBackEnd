@@ -4,6 +4,17 @@ from FastApiClient.graphql.domain.user.types import User
 
 
 @strawberry.type
+class SessionInfo:
+    session_id: str
+    device_info: str | None
+    user_agent: str | None
+    ip_address: str | None
+    created_at: str
+    last_seen_at: str | None
+    is_current: bool
+
+
+@strawberry.type
 class AuthTokens:
     access_token: str
     refresh_token: str

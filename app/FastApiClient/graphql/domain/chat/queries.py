@@ -11,11 +11,14 @@ from .types import Chat
 class ChatQueries:
     @strawberry.field
     async def get(self, chat_id: str, info: strawberry.Info[GraphQLContext]) -> Chat:
+        access_token = info.context.require_access_token()
+        current_user_id = info.context.require_user_id()
+
         grpc_chat = await anyio.to_thread.run_sync(
             lambda: info.context.chat_client.get_chat(
                 chat_id=chat_id,
-                access_token=info.context.access_token,
-                current_user_id=info.context.current_user_id,
+                access_token=access_token,
+                current_user_id=current_user_id,
             )
         )
         return from_grpc_chat(grpc_chat)
@@ -27,16 +30,16 @@ class ChatQueries:
         page: int = 1,
         page_size: int = 20,
     ) -> List[Chat]:
-        if not info.context.is_access_token_verified or not info.context.access_token:
-            raise PermissionError("Missing or invalid access token")
+        access_token = info.context.require_access_token()
+        current_user_id = info.context.require_user_id()
 
         grpc_resp = await anyio.to_thread.run_sync(
             lambda: info.context.chat_client.list_chats(
-                user_id=info.context.current_user_id,
+                user_id=current_user_id,
                 page=page,
                 page_size=page_size,
-                access_token=info.context.access_token,
-                current_user_id=info.context.current_user_id,
+                access_token=access_token,
+                current_user_id=current_user_id,
             )
         )
         return [from_grpc_chat(chat) for chat in grpc_resp.chats]
@@ -49,13 +52,16 @@ class ChatQueries:
         page: int = 1,
         page_size: int = 50,
     ) -> List[str]:
+        access_token = info.context.require_access_token()
+        current_user_id = info.context.require_user_id()
+
         grpc_resp = await anyio.to_thread.run_sync(
             lambda: info.context.chat_client.list_chat_members(
                 chat_id=chat_id,
                 page=page,
                 page_size=page_size,
-                access_token=info.context.access_token,
-                current_user_id=info.context.current_user_id,
+                access_token=access_token,
+                current_user_id=current_user_id,
             )
         )
         return [member.user_id for member in grpc_resp.members]

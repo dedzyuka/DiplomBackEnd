@@ -3,9 +3,7 @@ from typing import Optional
 
 from FastApiClient.graphql.context import GraphQLContext
 from FastApiClient.utils.converter import from_grpc_user
-
-
-from FastApiClient.graphql.domain.user.types import PrivacySettings,PrivacyUpdateInput, User
+from FastApiClient.graphql.domain.user.types import PrivacySettings, PrivacyUpdateInput, User
 
 
 @strawberry.type
@@ -21,24 +19,20 @@ class UserMutations:
     ) -> User:
         grpc_user = info.context.user_client.create_user(nick_name, email, password, phone)
         return from_grpc_user(grpc_user)
-    
+
     def _assert_owner(
-            self,
-            context: GraphQLContext,
-            target_user_id: str,
-            operation: str,
-        ) -> None:
-            """
-            Strict auth policy for user profile mutations.
+        self,
+        context: GraphQLContext,
+        target_user_id: str,
+        operation: str,
+    ) -> tuple[str, str]:
+        current_user_id = context.require_user_id()
+        access_token = context.require_access_token()
 
-            - request must be authenticated
-            - only owner can mutate own profile
-            """
-            if not context.current_user_id:
-                raise PermissionError(f"Authorization required for {operation}")
+        if current_user_id != target_user_id:
+            raise PermissionError(f"You can {operation} only your own profile")
 
-            if context.current_user_id != target_user_id:
-                raise PermissionError(f"You can {operation} only your own profile")
+        return current_user_id, access_token
 
     @strawberry.mutation
     async def update(
@@ -54,9 +48,7 @@ class UserMutations:
         avatar_url: Optional[str] = None,
         bio: Optional[str] = None,
     ) -> Optional[User]:
-        self._assert_owner(info.context, user_id, "update")
-        print(info.context.current_user_id)
-        
+        _, access_token = self._assert_owner(info.context, user_id, "update")
 
         grpc_user = info.context.user_client.update_user(
             user_id,
@@ -68,27 +60,25 @@ class UserMutations:
             phone or "",
             avatar_url or "",
             bio or "",
-            access_token=info.context.access_token,
+            access_token=access_token,
         )
         return from_grpc_user(grpc_user)
 
     @strawberry.mutation
     async def delete(self, id: str, info: strawberry.Info[GraphQLContext]) -> bool:
-        self._assert_owner(info.context, id, "delete")
-        
+        _, access_token = self._assert_owner(info.context, id, "delete")
 
-        info.context.user_client.delete_user(id, access_token=info.context.access_token)
+        info.context.user_client.delete_user(id, access_token=access_token)
         return True
 
-    
     @strawberry.mutation
     async def update_privacy(
         self,
         input: PrivacyUpdateInput,
         info: strawberry.Info[GraphQLContext],
     ) -> PrivacySettings:
-        if not info.context.current_user_id:
-            raise PermissionError("Authorization required for update_privacy")
+        current_user_id = info.context.require_user_id()
+        access_token = info.context.require_access_token()
 
         allowed = {"everyone", "contacts", "nobody"}
 
@@ -119,12 +109,12 @@ class UserMutations:
             raise ValueError("At least one privacy field must be provided")
 
         response = info.context.user_client.update_privacy(
-            user_id=info.context.current_user_id,
+            user_id=current_user_id,
             who_can_write_me=who_can_write_me,
             who_can_add_to_groups=who_can_add_to_groups,
             who_can_see_phone=who_can_see_phone,
             who_can_see_last_seen=who_can_see_last_seen,
-            access_token=info.context.access_token,
+            access_token=access_token,
         )
 
         reverse_map = {

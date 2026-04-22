@@ -15,6 +15,9 @@ from security.NewPass import CreatePass
 from services.converters.userConverter import db_user_to_proto
 from services.models import User,SessionEvent
 
+from google.protobuf.timestamp_pb2 import Timestamp
+from services.access_session import resolve_access_session
+
 
 from core.config import settings
 
@@ -128,19 +131,33 @@ class AuthServicer(mess_pb2_grpc.AuthServiceServicer):
             session_id = str(uuid4())
             access_token = self._new_access(user_id, session_id)
             refresh_token = self._new_refresh(user_id, session_id)
+            now = datetime.now(timezone.utc)
+
+            device_info = request.device_info or self._metadata_value(context, "x-device-info")
+            ip_address = request.ip_address or self._metadata_value(context, "x-forwarded-for")
+            user_agent = request.user_agent or self._metadata_value(context, "x-user-agent")
+
             await redis_client.set_session_tokens(
                 session_id=session_id,
-                user_id=user_id,
+                user_id=str(user.user_id),
                 refresh_token=refresh_token,
                 access_token=access_token,
                 ttl_seconds=self.refresh_ttl_days * 24 * 60 * 60,
+                device_info=device_info,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                created_at=now,
+                last_seen_at=now,
             )
 
             await self._log_session_event(
-                user_id=user_id,
+                user_id=str(user.user_id),
                 action="login",
                 refresh_token=refresh_token,
                 context=context,
+                device_info=device_info,
+                ip_address=ip_address,
+                user_agent=user_agent,
             )
 
 
@@ -177,17 +194,25 @@ class AuthServicer(mess_pb2_grpc.AuthServiceServicer):
 
             new_access = self._new_access(user_id, session_id)
             await redis_client.set_session_tokens(
-                session_id=session_id,
-                user_id=user_id,
-                refresh_token=refresh_token,
-                access_token=new_access,
-                ttl_seconds=self.refresh_ttl_days * 24 * 60 * 60,
+            session_id=session_id,
+            user_id=str(user.user_id),
+            refresh_token=refresh_token,
+            access_token=new_access,
+            ttl_seconds=self.refresh_ttl_days * 24 * 60 * 60,
+            device_info=stored_session.get("device_info"),
+            ip_address=stored_session.get("ip_address"),
+            user_agent=stored_session.get("user_agent"),
+            created_at=self._parse_iso_dt(stored_session.get("created_at")) or datetime.now(timezone.utc),
+            last_seen_at=datetime.now(timezone.utc),
             )
             await self._log_session_event(
-                user_id=user_id,
-                action="refresh",
-                refresh_token=refresh_token,
-                context=context,
+            user_id=str(user.user_id),
+            action="refresh",
+            refresh_token=refresh_token,
+            context=context,
+            device_info=stored_session.get("device_info"),
+            ip_address=stored_session.get("ip_address"),
+            user_agent=stored_session.get("user_agent"),
             )
 
             return mess_pb2.LoginResponse(
@@ -217,3 +242,171 @@ class AuthServicer(mess_pb2_grpc.AuthServiceServicer):
                 )
 
         return Empty()
+    
+    async def ListSessions(self, request, context):
+        principal = await self._require_access_principal(context)
+
+        sessions = await redis_client.get_user_sessions(principal.user_id)
+        items = [
+            self._session_info_from_redis(item, principal.session_id)
+            for item in sessions
+        ]
+
+        return mess_pb2.ListSessionsResponse(sessions=items)
+
+    async def LogoutCurrentSession(self, request, context):
+        principal = await self._require_access_principal(context)
+
+        await redis_client.delete_session(principal.session_id)
+        await self._log_session_event(
+            user_id=principal.user_id,
+            action="logout",
+            refresh_token=None,
+            context=context,
+        )
+        return Empty()
+
+    async def RevokeSession(self, request, context):
+        principal = await self._require_access_principal(context)
+
+        target_session_id = (request.session_id or "").strip()
+        if not target_session_id:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "session_id is required")
+
+        target_session = await redis_client.get_session_tokens(target_session_id)
+        if not target_session:
+            return Empty()
+
+        if target_session.get("user_id") != principal.user_id:
+            await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Cannot revoke чужую сессию")
+
+        await redis_client.delete_session(target_session_id)
+        await self._log_session_event(
+            user_id=principal.user_id,
+            action="revoke",
+            refresh_token=None,
+            context=context,
+            device_info=target_session.get("device_info"),
+            ip_address=target_session.get("ip_address"),
+            user_agent=target_session.get("user_agent"),
+        )
+        return Empty()
+
+    async def LogoutAllOtherSessions(self, request, context):
+        principal = await self._require_access_principal(context)
+
+        await redis_client.delete_other_sessions(
+            principal.user_id,
+            principal.session_id,
+        )
+
+        await self._log_session_event(
+            user_id=principal.user_id,
+            action="logout_others",
+            refresh_token=None,
+            context=context,
+        )
+        return Empty()
+
+
+    @staticmethod
+    def _metadata_value(context, key: str) -> str | None:
+        metadata = context.invocation_metadata() if context else None
+        if not metadata:
+            return None
+
+        lookup = key.lower()
+        for item in metadata:
+            if (item.key or "").lower() == lookup:
+                value = (item.value or "").strip()
+                return value or None
+        return None
+
+    @staticmethod
+    def _dt_to_ts(dt: datetime | None) -> Timestamp:
+        ts = Timestamp()
+        if dt is None:
+            return ts
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        ts.FromDatetime(dt)
+        return ts
+
+    @staticmethod
+    def _parse_iso_dt(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            normalized = value.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(normalized)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except Exception:
+            return None
+
+    async def _require_access_principal(self, context):
+        principal = await resolve_access_session(context)
+        if not principal:
+            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid or revoked access session")
+        return principal
+
+    async def _log_session_event(
+        self,
+        *,
+        user_id: str | None,
+        action: str,
+        refresh_token: str | None,
+        context,
+        device_info: str | None = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> None:
+        if not user_id:
+            return
+
+        refresh_token_hash = None
+        if refresh_token:
+            refresh_token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+
+        if device_info is None:
+            device_info = self._metadata_value(context, "x-device-info")
+        if ip_address is None:
+            ip_address = self._metadata_value(context, "x-forwarded-for")
+        if user_agent is None:
+            user_agent = self._metadata_value(context, "x-user-agent")
+
+        try:
+            async with AsyncSessionLocal() as session:
+                session.add(
+                    SessionEvent(
+                        user_id=user_id,
+                        action=action,
+                        refresh_token_hash=refresh_token_hash,
+                        device_info=device_info,
+                        ip_address=ip_address,
+                        user_agent=user_agent,
+                    )
+                )
+                await session.commit()
+        except Exception:
+            # аудит не должен валить auth flow
+            pass
+
+    def _session_info_from_redis(self, data: dict[str, str], current_session_id: str) -> mess_pb2.SessionInfo:
+        created_at = self._parse_iso_dt(data.get("created_at"))
+        last_seen_at = self._parse_iso_dt(data.get("last_seen_at"))
+
+        info = mess_pb2.SessionInfo(
+            session_id=data.get("session_id", ""),
+            device_info=data.get("device_info", ""),
+            ip_address=data.get("ip_address", ""),
+            user_agent=data.get("user_agent", ""),
+            created_at=self._dt_to_ts(created_at),
+            is_current=data.get("session_id") == current_session_id,
+        )
+
+        if last_seen_at is not None:
+            info.last_seen_at.CopyFrom(self._dt_to_ts(last_seen_at))
+
+        return info

@@ -75,6 +75,8 @@ async def resolve_access_session(context) -> AccessSessionPrincipal | None:
     stored_access_token = session_data.get("access_token")
     if stored_access_token and stored_access_token != token:
         return None
+    
+    await redis_client.touch_session(str(session_id))
 
     return AccessSessionPrincipal(
         user_id=str(user_id),

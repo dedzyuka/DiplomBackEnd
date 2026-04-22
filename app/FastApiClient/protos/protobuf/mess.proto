@@ -326,6 +326,29 @@ message RefreshTokenRequest {
   string refresh_token = 1;
 }
 
+message SessionInfo {
+  string session_id = 1;
+  optional string device_info = 2;
+  optional string ip_address = 3;
+  optional string user_agent = 4;
+  google.protobuf.Timestamp created_at = 5;
+  optional google.protobuf.Timestamp last_seen_at = 6;
+  bool is_current = 7;
+}
+
+message ListSessionsRequest {}
+
+message ListSessionsResponse {
+  repeated SessionInfo sessions = 1;
+}
+
+message LogoutCurrentSessionRequest {}
+
+message RevokeSessionRequest {
+  string session_id = 1;
+}
+
+message LogoutAllOtherSessionsRequest {}
 // --- Contacts ---
 message AddContactRequest {
   string user_id = 1;

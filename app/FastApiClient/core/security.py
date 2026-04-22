@@ -1,7 +1,9 @@
+# app/FastApiClient/core/security.py
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Dict, Literal, Optional
 from uuid import uuid4
 
 from jose import JWTError, jwt
@@ -12,9 +14,10 @@ from FastApiClient.core.config import settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 ALGORITHM = settings.JWT_ALGORITHM
+TokenType = Literal["access", "refresh"]
 
 
-def _base_claims(expires_at: datetime, token_type: str) -> Dict:
+def _base_claims(expires_at: datetime, token_type: TokenType) -> Dict:
     now = datetime.now(timezone.utc)
     return {
         "iss": settings.JWT_ISSUER,
@@ -27,23 +30,49 @@ def _base_claims(expires_at: datetime, token_type: str) -> Dict:
     }
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+def _build_session_token(
+    *,
+    user_id: str,
+    session_id: str,
+    token_type: TokenType,
+    expires_delta: timedelta,
+) -> str:
+    expire = datetime.now(timezone.utc) + expires_delta
+    payload = {
+        "sub": user_id,
+        "sid": session_id,
+        **_base_claims(expire, token_type=token_type),
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_access_token(
+    user_id: str,
+    session_id: str,
+    expires_delta: Optional[timedelta] = None,
+) -> str:
+    return _build_session_token(
+        user_id=user_id,
+        session_id=session_id,
+        token_type="access",
+        expires_delta=expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
     )
-    to_encode.update(_base_claims(expire, token_type="access"))
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 
-def create_refresh_token(data: dict) -> str:
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    to_encode.update(_base_claims(expire, token_type="refresh"))
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
+def create_refresh_token(
+    user_id: str,
+    session_id: str,
+    expires_delta: Optional[timedelta] = None,
+) -> str:
+    return _build_session_token(
+        user_id=user_id,
+        session_id=session_id,
+        token_type="refresh",
+        expires_delta=expires_delta or timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+    )
 
 
-def verify_token(token: str, token_type: Optional[str] = "access") -> Optional[Dict]:
+def verify_token(token: str, token_type: Optional[TokenType] = "access") -> Optional[Dict]:
     try:
         payload = jwt.decode(
             token,
@@ -58,7 +87,7 @@ def verify_token(token: str, token_type: Optional[str] = "access") -> Optional[D
     if token_type and payload.get("type") != token_type:
         return None
 
-    if not payload.get("sub"):
+    if not payload.get("sub") or not payload.get("sid"):
         return None
 
     return payload
