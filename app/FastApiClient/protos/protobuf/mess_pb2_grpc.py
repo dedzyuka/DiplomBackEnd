@@ -67,6 +67,11 @@ class UserServiceStub(object):
                 request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
                 response_deserializer=mess__pb2.User.FromString,
                 _registered_method=True)
+        self.GetMyPrivacy = channel.unary_unary(
+                '/messenger.UserService/GetMyPrivacy',
+                request_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+                response_deserializer=mess__pb2.PrivacySetting.FromString,
+                _registered_method=True)
         self.UpdatePrivacy = channel.unary_unary(
                 '/messenger.UserService/UpdatePrivacy',
                 request_serializer=mess__pb2.UpdatePrivacyRequest.SerializeToString,
@@ -115,6 +120,12 @@ class UserServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetMyPrivacy(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def UpdatePrivacy(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -153,6 +164,11 @@ def add_UserServiceServicer_to_server(servicer, server):
                     servicer.GetMyProfile,
                     request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                     response_serializer=mess__pb2.User.SerializeToString,
+            ),
+            'GetMyPrivacy': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetMyPrivacy,
+                    request_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                    response_serializer=mess__pb2.PrivacySetting.SerializeToString,
             ),
             'UpdatePrivacy': grpc.unary_unary_rpc_method_handler(
                     servicer.UpdatePrivacy,
@@ -324,6 +340,33 @@ class UserService(object):
             '/messenger.UserService/GetMyProfile',
             google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             mess__pb2.User.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetMyPrivacy(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.UserService/GetMyPrivacy',
+            google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            mess__pb2.PrivacySetting.FromString,
             options,
             channel_credentials,
             insecure,

@@ -25,10 +25,21 @@ class UserGrpcClient(BaseGrpcClient):
         except grpc.RpcError as e:
             self._handle_rpc_error(e)
 
-    def search_users(self, query: str, page: int = 1, page_size: int = 20) -> mess_pb2.UsersListResponse:
+    def search_users(
+        self,
+        query: str,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> mess_pb2.UsersListResponse:
         page = max(page, 1)
+        page_size = max(page_size, 1)
         page_token = str((page - 1) * page_size)
-        request = mess_pb2.SearchUsersRequest(query=query, page_size=page_size, page_token=page_token)
+
+        request = mess_pb2.SearchUsersRequest(
+            query=query or "",
+            page_size=page_size,
+            page_token=page_token,
+        )
         try:
             return self.stub.SearchUsers(request, timeout=5)
         except grpc.RpcError as e:
@@ -37,7 +48,6 @@ class UserGrpcClient(BaseGrpcClient):
     def get_my_profile(self, access_token: str | None = None) -> mess_pb2.User:
         request = Empty()
         try:
-            
             return self.stub.GetMyProfile(
                 request,
                 timeout=5,
@@ -46,7 +56,13 @@ class UserGrpcClient(BaseGrpcClient):
         except grpc.RpcError as e:
             self._handle_rpc_error(e)
 
-    def create_user(self, nick_name: str, email: str, password: str, phone: str) -> mess_pb2.User:
+    def create_user(
+        self,
+        nick_name: str,
+        email: str,
+        password: str,
+        phone: str,
+    ) -> mess_pb2.User:
         request = mess_pb2.CreateUserRequest(
             nick_name=nick_name,
             email=email,
@@ -103,49 +119,43 @@ class UserGrpcClient(BaseGrpcClient):
             self._handle_rpc_error(e)
 
     def update_privacy(
-    self,
-    user_id: str,
-    who_can_write_me: str | None = None,
-    who_can_add_to_groups: str | None = None,
-    who_can_see_phone: str | None = None,
-    who_can_see_last_seen: str | None = None,
-    access_token: str | None = None,
-) -> mess_pb2.PrivacySetting:
-        level_map = {
-            "everyone": mess_pb2.PrivacyLevel.EVERYONE,
-            "contacts": mess_pb2.PrivacyLevel.CONTACTS,
-            "nobody": mess_pb2.PrivacyLevel.NOBODY,
+        self,
+        *,
+        user_id: str,
+        who_can_write_me: str | None = None,
+        who_can_add_to_groups: str | None = None,
+        who_can_see_phone: str | None = None,
+        who_can_see_last_seen: str | None = None,
+        access_token: str | None = None,
+    ):
+        privacy_map = {
+            None: 0,
+            "everyone": 1,
+            "contacts": 2,
+            "nobody": 3,
         }
 
-        def map_level(value: str | None, field_name: str):
-            if value is None:
-                return None
-            normalized = value.strip().lower()
-            level = level_map.get(normalized)
-            if level is None:
-                raise ValueError(
-                    f"{field_name} must be one of: everyone, contacts, nobody"
-                )
-            return level
-
-        request = mess_pb2.UpdatePrivacyRequest(user_id=str(user_id))
-
-        write_level = map_level(who_can_write_me, "who_can_write_me")
-        add_level = map_level(who_can_add_to_groups, "who_can_add_to_groups")
-        phone_level = map_level(who_can_see_phone, "who_can_see_phone")
-        last_seen_level = map_level(who_can_see_last_seen, "who_can_see_last_seen")
-
-        if write_level is not None:
-            request.who_can_write_me = write_level
-        if add_level is not None:
-            request.who_can_add_to_groups = add_level
-        if phone_level is not None:
-            request.who_can_see_phone = phone_level
-        if last_seen_level is not None:
-            request.who_can_see_last_seen = last_seen_level
+        request = mess_pb2.UpdatePrivacyRequest(
+            user_id=str(user_id),
+            who_can_write_me=privacy_map.get(who_can_write_me, 0),
+            who_can_add_to_groups=privacy_map.get(who_can_add_to_groups, 0),
+            who_can_see_phone=privacy_map.get(who_can_see_phone, 0),
+            who_can_see_last_seen=privacy_map.get(who_can_see_last_seen, 0),
+        )
 
         try:
             return self.stub.UpdatePrivacy(
+                request,
+                timeout=5,
+                metadata=self._auth_metadata(access_token),
+            )
+        except grpc.RpcError as e:
+            self._handle_rpc_error(e)
+
+    def get_my_privacy(self, access_token: str | None = None) -> mess_pb2.PrivacySetting:
+        request = Empty()
+        try:
+            return self.stub.GetMyPrivacy(
                 request,
                 timeout=5,
                 metadata=self._auth_metadata(access_token),

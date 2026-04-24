@@ -678,6 +678,11 @@ service AuthService {
   rpc Login(LoginRequest) returns (LoginResponse);
   rpc Logout(LogoutRequest) returns (google.protobuf.Empty);
   rpc RefreshToken(RefreshTokenRequest) returns (LoginResponse);
+
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc LogoutCurrentSession(LogoutCurrentSessionRequest) returns (google.protobuf.Empty);
+  rpc RevokeSession(RevokeSessionRequest) returns (google.protobuf.Empty);
+  rpc LogoutAllOtherSessions(LogoutAllOtherSessionsRequest) returns (google.protobuf.Empty);
 }
 
 service ContactService {

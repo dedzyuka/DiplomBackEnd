@@ -5,6 +5,7 @@ import strawberry
 from FastApiClient.graphql.context import GraphQLContext
 from FastApiClient.utils.converter import from_grpc_user
 from .types import User
+from .types import PrivacySettings
 
 
 @strawberry.type
@@ -33,10 +34,28 @@ class UserQueries:
     @strawberry.field
     async def my_profile(self, info: strawberry.Info[GraphQLContext]) -> Optional[User]:
         """Получить профиль текущего пользователя."""
-        if not info.context.access_token:
-            raise PermissionError("Authorization required")
-
         grpc_user = info.context.user_client.get_my_profile(
-            access_token=info.context.access_token
+            access_token=info.context.require_access_token()
         )
         return from_grpc_user(grpc_user)
+    
+
+    @strawberry.field
+    async def my_privacy(self, info: strawberry.Info[GraphQLContext]) -> PrivacySettings:
+        response = info.context.user_client.get_my_privacy(
+            access_token=info.context.require_access_token()
+        )
+
+        reverse_map = {
+            1: "everyone",
+            2: "contacts",
+            3: "nobody",
+            0: "unspecified",
+        }
+
+        return PrivacySettings(
+            who_can_write_me=reverse_map.get(response.who_can_write_me, "unspecified"),
+            who_can_add_to_groups=reverse_map.get(response.who_can_add_to_groups, "unspecified"),
+            who_can_see_phone=reverse_map.get(response.who_can_see_phone, "unspecified"),
+            who_can_see_last_seen=reverse_map.get(response.who_can_see_last_seen, "unspecified"),
+        )

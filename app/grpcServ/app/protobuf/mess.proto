@@ -671,6 +671,7 @@ service UserService {
   rpc DeleteUser(DeleteUserRequest) returns (google.protobuf.Empty);
   rpc SearchUsers(SearchUsersRequest) returns (UsersListResponse);
   rpc GetMyProfile(google.protobuf.Empty) returns (User);
+  rpc GetMyPrivacy(google.protobuf.Empty) returns (PrivacySetting);
   rpc UpdatePrivacy(UpdatePrivacyRequest) returns (PrivacySetting);
 }
 
