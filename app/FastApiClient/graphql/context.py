@@ -5,6 +5,7 @@ from strawberry.fastapi import BaseContext
 
 from FastApiClient.core.session_auth import verify_access_session
 from FastApiClient.grpc_clients import auth_client, user_client, chat_client
+from FastApiClient.grpc_clients import message_client
 
 
 class GraphQLContext(BaseContext):
@@ -27,6 +28,7 @@ class GraphQLContext(BaseContext):
         self.session_id = session_id
         self.access_token = access_token
         self.is_access_token_verified = is_access_token_verified
+        self.message_client = message_client
 
     def require_access_token(self) -> str:
         if not self.is_access_token_verified or not self.access_token:

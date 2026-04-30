@@ -6,6 +6,8 @@ from FastApiClient.graphql.domain.auth.queries import AuthQueries
 from FastApiClient.graphql.domain.auth.mutations import AuthMutations
 from FastApiClient.graphql.domain.chat.queries import ChatQueries
 from FastApiClient.graphql.domain.chat.mutations import ChatMutations
+from FastApiClient.graphql.domain.message.queries import MessageQueries
+from FastApiClient.graphql.domain.message.mutations import MessageMutations
 
 
 @strawberry.type
@@ -13,6 +15,7 @@ class Query:
     user: UserQueries = strawberry.field(resolver=lambda: UserQueries())
     auth: AuthQueries = strawberry.field(resolver=lambda: AuthQueries())
     chat: ChatQueries = strawberry.field(resolver=lambda: ChatQueries())
+    message: MessageQueries = strawberry.field(resolver=lambda: MessageQueries())
 
 
 @strawberry.type
@@ -20,6 +23,7 @@ class Mutation:
     user: UserMutations = strawberry.field(resolver=lambda: UserMutations())
     auth: AuthMutations = strawberry.field(resolver=lambda: AuthMutations())
     chat: ChatMutations = strawberry.field(resolver=lambda: ChatMutations())
+    message: MessageMutations = strawberry.field(resolver=lambda: MessageMutations())
 
 
 schema = strawberry.Schema(query=Query, mutation=Mutation)

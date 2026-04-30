@@ -1751,6 +1751,16 @@ class MessageServiceStub(object):
                 request_serializer=mess__pb2.StreamMessagesRequest.SerializeToString,
                 response_deserializer=mess__pb2.MessageEvent.FromString,
                 _registered_method=True)
+        self.MarkAsDelivered = channel.unary_unary(
+                '/messenger.MessageService/MarkAsDelivered',
+                request_serializer=mess__pb2.MarkAsDeliveredRequest.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                _registered_method=True)
+        self.MarkAsRead = channel.unary_unary(
+                '/messenger.MessageService/MarkAsRead',
+                request_serializer=mess__pb2.MarkAsReadRequest.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                _registered_method=True)
 
 
 class MessageServiceServicer(object):
@@ -1810,6 +1820,18 @@ class MessageServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def MarkAsDelivered(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def MarkAsRead(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_MessageServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -1857,6 +1879,16 @@ def add_MessageServiceServicer_to_server(servicer, server):
                     servicer.StreamMessages,
                     request_deserializer=mess__pb2.StreamMessagesRequest.FromString,
                     response_serializer=mess__pb2.MessageEvent.SerializeToString,
+            ),
+            'MarkAsDelivered': grpc.unary_unary_rpc_method_handler(
+                    servicer.MarkAsDelivered,
+                    request_deserializer=mess__pb2.MarkAsDeliveredRequest.FromString,
+                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            ),
+            'MarkAsRead': grpc.unary_unary_rpc_method_handler(
+                    servicer.MarkAsRead,
+                    request_deserializer=mess__pb2.MarkAsReadRequest.FromString,
+                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -2102,6 +2134,60 @@ class MessageService(object):
             '/messenger.MessageService/StreamMessages',
             mess__pb2.StreamMessagesRequest.SerializeToString,
             mess__pb2.MessageEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MarkAsDelivered(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.MessageService/MarkAsDelivered',
+            mess__pb2.MarkAsDeliveredRequest.SerializeToString,
+            google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def MarkAsRead(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.MessageService/MarkAsRead',
+            mess__pb2.MarkAsReadRequest.SerializeToString,
+            google_dot_protobuf_dot_empty__pb2.Empty.FromString,
             options,
             channel_credentials,
             insecure,
