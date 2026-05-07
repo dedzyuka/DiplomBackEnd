@@ -769,6 +769,11 @@ class ContactServiceStub(object):
                 request_serializer=mess__pb2.ListContactsRequest.SerializeToString,
                 response_deserializer=mess__pb2.ContactsListResponse.FromString,
                 _registered_method=True)
+        self.ListIncomingContacts = channel.unary_unary(
+                '/messenger.ContactService/ListIncomingContacts',
+                request_serializer=mess__pb2.ListContactsRequest.SerializeToString,
+                response_deserializer=mess__pb2.ContactsListResponse.FromString,
+                _registered_method=True)
 
 
 class ContactServiceServicer(object):
@@ -804,6 +809,12 @@ class ContactServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListIncomingContacts(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ContactServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -829,6 +840,11 @@ def add_ContactServiceServicer_to_server(servicer, server):
             ),
             'ListContacts': grpc.unary_unary_rpc_method_handler(
                     servicer.ListContacts,
+                    request_deserializer=mess__pb2.ListContactsRequest.FromString,
+                    response_serializer=mess__pb2.ContactsListResponse.SerializeToString,
+            ),
+            'ListIncomingContacts': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListIncomingContacts,
                     request_deserializer=mess__pb2.ListContactsRequest.FromString,
                     response_serializer=mess__pb2.ContactsListResponse.SerializeToString,
             ),
@@ -966,6 +982,33 @@ class ContactService(object):
             request,
             target,
             '/messenger.ContactService/ListContacts',
+            mess__pb2.ListContactsRequest.SerializeToString,
+            mess__pb2.ContactsListResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListIncomingContacts(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.ContactService/ListIncomingContacts',
             mess__pb2.ListContactsRequest.SerializeToString,
             mess__pb2.ContactsListResponse.FromString,
             options,

@@ -136,3 +136,30 @@ class ContactGrpcClient(BaseGrpcClient):
             )
         except grpc.RpcError as e:
             self._handle_rpc_error(e)
+    def list_incoming_contacts(
+        self,
+        *,
+        user_id: str,
+        page: int = 1,
+        page_size: int = 20,
+        access_token: str,
+    ) -> mess_pb2.ContactsListResponse:
+        page = max(page, 1)
+        page_size = max(1, min(page_size, 100))
+        page_token = str((page - 1) * page_size)
+
+        request = mess_pb2.ListContactsRequest(
+            user_id=user_id,
+            status=mess_pb2.ContactStatus.PENDING,
+            page_size=page_size,
+            page_token=page_token,
+        )
+
+        try:
+            return self.stub.ListIncomingContacts(
+                request,
+                timeout=5,
+                metadata=self._auth_metadata(access_token),
+            )
+        except grpc.RpcError as e:
+            self._handle_rpc_error(e)

@@ -331,3 +331,74 @@ class ContactServicer(mess_pb2_grpc.ContactServiceServicer):
                 next_page_token=next_page_token,
                 total_count=0,
             )
+        
+    async def ListIncomingContacts(self, request, context):
+        current_user_id = await self._require_current_user_id(context)
+
+        if current_user_id != request.user_id:
+            await context.abort(
+                grpc.StatusCode.PERMISSION_DENIED,
+                "Cannot list incoming contacts for another user",
+            )
+
+        try:
+            user_uuid = self._parse_uuid(request.user_id, "user_id", context)
+        except ValueError as e:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+
+        page_size = max(1, min(request.page_size or 20, 100))
+
+        try:
+            offset = int(request.page_token or "0")
+        except ValueError:
+            offset = 0
+
+        async with AsyncSessionLocal() as session:
+            stmt = (
+                select(Contact)
+                .options(selectinload(Contact.user))
+                .where(
+                    Contact.contact_user_id == user_uuid,
+                    Contact.status == DbContactStatus.pending,
+                )
+                .order_by(Contact.updated_at.desc())
+                .offset(offset)
+                .limit(page_size)
+            )
+
+            contacts = (await session.execute(stmt)).scalars().all()
+
+            result_contacts = []
+
+            for contact in contacts:
+                result = mess_pb2.Contact(
+                    user_id=str(contact.user_id),
+                    contact_user_id=str(contact.contact_user_id),
+                    status=self._status_to_proto(contact.status),
+                )
+
+                if contact.created_at:
+                    ts = Timestamp()
+                    ts.FromDatetime(contact.created_at)
+                    result.created_at.CopyFrom(ts)
+
+                if contact.updated_at:
+                    ts = Timestamp()
+                    ts.FromDatetime(contact.updated_at)
+                    result.updated_at.CopyFrom(ts)
+
+                # Для входящей заявки contact_user должен быть отправитель заявки,
+                # то есть contact.user, а не contact.contact_user.
+                if getattr(contact, "user", None):
+                    result.contact_user.CopyFrom(db_user_to_proto(contact.user))
+
+                result_contacts.append(result)
+
+            next_offset = offset + len(contacts)
+            next_page_token = str(next_offset) if len(contacts) == page_size else ""
+
+            return mess_pb2.ContactsListResponse(
+                contacts=result_contacts,
+                next_page_token=next_page_token,
+                total_count=0,
+            )

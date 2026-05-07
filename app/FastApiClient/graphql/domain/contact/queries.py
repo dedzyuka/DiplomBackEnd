@@ -43,12 +43,39 @@ class ContactQueries:
         page: int = 1,
         page_size: int = 20,
     ) -> List[Contact]:
+        """
+        Исходящие заявки текущего пользователя.
+        user_id = current_user_id AND status = pending
+        """
         current_user_id = info.context.require_user_id()
         access_token = info.context.require_access_token()
 
         response = info.context.contact_client.list_contacts(
             user_id=current_user_id,
             status="pending",
+            page=page,
+            page_size=page_size,
+            access_token=access_token,
+        )
+
+        return [from_grpc_contact(contact) for contact in response.contacts]
+
+    @strawberry.field
+    async def incoming(
+        self,
+        info: strawberry.Info[GraphQLContext],
+        page: int = 1,
+        page_size: int = 20,
+    ) -> List[Contact]:
+        """
+        Входящие заявки текущего пользователя.
+        contact_user_id = current_user_id AND status = pending
+        """
+        current_user_id = info.context.require_user_id()
+        access_token = info.context.require_access_token()
+
+        response = info.context.contact_client.list_incoming_contacts(
+            user_id=current_user_id,
             page=page,
             page_size=page_size,
             access_token=access_token,

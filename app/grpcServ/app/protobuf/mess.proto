@@ -702,6 +702,7 @@ service ContactService {
   rpc BlockContact(BlockContactRequest) returns (Contact);
   rpc RemoveContact(RemoveContactRequest) returns (google.protobuf.Empty);
   rpc ListContacts(ListContactsRequest) returns (ContactsListResponse);
+  rpc ListIncomingContacts(ListContactsRequest) returns (ContactsListResponse);
 }
 
 service ChatService {
