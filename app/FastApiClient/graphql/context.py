@@ -5,7 +5,7 @@ from strawberry.fastapi import BaseContext
 
 from FastApiClient.core.session_auth import verify_access_session
 from FastApiClient.grpc_clients import auth_client, user_client, chat_client
-from FastApiClient.grpc_clients import message_client
+from FastApiClient.grpc_clients import message_client, contact_client
 
 
 class GraphQLContext(BaseContext):
@@ -15,6 +15,7 @@ class GraphQLContext(BaseContext):
         user_client,
         auth_client,
         chat_client,
+        contact_client,
         current_user_id: Optional[str] = None,
         session_id: Optional[str] = None,
         access_token: Optional[str] = None,
@@ -24,6 +25,7 @@ class GraphQLContext(BaseContext):
         self.user_client = user_client
         self.auth_client = auth_client
         self.chat_client = chat_client
+        self.contact_client = contact_client
         self.current_user_id = current_user_id
         self.session_id = session_id
         self.access_token = access_token
@@ -106,6 +108,7 @@ async def get_context(request: Request) -> GraphQLContext:
         user_client=user_client,
         auth_client=auth_client,
         chat_client=chat_client,
+        contact_client=contact_client,
         current_user_id=current_user_id,
         session_id=session_id,
         access_token=verified_access_token,

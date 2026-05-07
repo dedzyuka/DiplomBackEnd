@@ -3,7 +3,7 @@ from typing import List, Optional
 import strawberry
 
 from FastApiClient.graphql.context import GraphQLContext
-from FastApiClient.utils.converter import from_grpc_user
+from FastApiClient.utils.converter import _ts_to_iso, from_grpc_user
 from .types import User
 from .types import PrivacySettings
 
@@ -58,4 +58,5 @@ class UserQueries:
             who_can_add_to_groups=reverse_map.get(response.who_can_add_to_groups, "unspecified"),
             who_can_see_phone=reverse_map.get(response.who_can_see_phone, "unspecified"),
             who_can_see_last_seen=reverse_map.get(response.who_can_see_last_seen, "unspecified"),
+            updated_at=_ts_to_iso(response.updated_at),
         )

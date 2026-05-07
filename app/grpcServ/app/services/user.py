@@ -283,6 +283,29 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
                 await context.abort(grpc.StatusCode.NOT_FOUND, "User not found")
             return db_user_to_proto(user)
 
+    def _privacy_to_proto_value(self, value) -> int:
+        raw = getattr(value, "value", value)
+        return self._PRIVACY_DB_TO_PROTO.get(
+            str(raw),
+            mess_pb2.PrivacyLevel.PRIVACY_LEVEL_UNSPECIFIED,
+        )
+
+    def _db_privacy_to_proto(self, db_privacy: PrivacySetting) -> mess_pb2.PrivacySetting:
+        response = mess_pb2.PrivacySetting(
+            user_id=str(db_privacy.user_id),
+            who_can_write_me=self._privacy_to_proto_value(db_privacy.who_can_write_me),
+            who_can_add_to_groups=self._privacy_to_proto_value(db_privacy.who_can_add_to_groups),
+            who_can_see_phone=self._privacy_to_proto_value(db_privacy.who_can_see_phone),
+            who_can_see_last_seen=self._privacy_to_proto_value(db_privacy.who_can_see_last_seen),
+        )
+
+        if db_privacy.updated_at:
+            ts = Timestamp()
+            ts.FromDatetime(db_privacy.updated_at)
+            response.updated_at.CopyFrom(ts)
+
+        return response
+
     async def UpdatePrivacy(self, request, context):
         user_id = (request.user_id or "").strip()
         if not user_id:
@@ -309,56 +332,32 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
 
             changed = False
 
-            if request.who_can_write_me in self._PRIVACY_PROTO_TO_DB:
+            if request.HasField("who_can_write_me") and request.who_can_write_me in self._PRIVACY_PROTO_TO_DB:
                 privacy.who_can_write_me = self._PRIVACY_PROTO_TO_DB[request.who_can_write_me]
                 changed = True
 
-            if request.who_can_add_to_groups in self._PRIVACY_PROTO_TO_DB:
+            if request.HasField("who_can_add_to_groups") and request.who_can_add_to_groups in self._PRIVACY_PROTO_TO_DB:
                 privacy.who_can_add_to_groups = self._PRIVACY_PROTO_TO_DB[request.who_can_add_to_groups]
                 changed = True
 
-            if request.who_can_see_phone in self._PRIVACY_PROTO_TO_DB:
+            if request.HasField("who_can_see_phone") and request.who_can_see_phone in self._PRIVACY_PROTO_TO_DB:
                 privacy.who_can_see_phone = self._PRIVACY_PROTO_TO_DB[request.who_can_see_phone]
                 changed = True
 
-            if request.who_can_see_last_seen in self._PRIVACY_PROTO_TO_DB:
+            if request.HasField("who_can_see_last_seen") and request.who_can_see_last_seen in self._PRIVACY_PROTO_TO_DB:
                 privacy.who_can_see_last_seen = self._PRIVACY_PROTO_TO_DB[request.who_can_see_last_seen]
-            
+                changed = True
+
             if not changed:
                 await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "No privacy fields to update")
 
-        await session.commit()
+            privacy.updated_at = datetime.now(timezone.utc)
 
-        return mess_pb2.PrivacySetting(
-            user_id=str(privacy.user_id),
-            who_can_write_me=self._PRIVACY_DB_TO_PROTO[privacy.who_can_write_me.value],
-            who_can_add_to_groups=self._PRIVACY_DB_TO_PROTO[privacy.who_can_add_to_groups.value],
-            who_can_see_phone=self._PRIVACY_DB_TO_PROTO[privacy.who_can_see_phone.value],
-            who_can_see_last_seen=self._PRIVACY_DB_TO_PROTO[privacy.who_can_see_last_seen.value],
-        )
-    
-    def _db_privacy_to_proto(self, db_privacy: PrivacySetting) -> mess_pb2.PrivacySetting:
-        def map_to_proto(level_str: str) -> int:
-            mapping = {
-                "everyone": mess_pb2.PrivacyLevel.EVERYONE,
-                "contacts": mess_pb2.PrivacyLevel.CONTACTS,
-                "nobody": mess_pb2.PrivacyLevel.NOBODY,
-            }
-            return mapping.get(level_str, mess_pb2.PrivacyLevel.PRIVACY_LEVEL_UNSPECIFIED)
+            await session.commit()
+            await session.refresh(privacy)
 
-        ts = Timestamp()
-        ts.FromDatetime(db_privacy.updated_at)
+            return self._db_privacy_to_proto(privacy)
 
-        return mess_pb2.PrivacySetting(
-            user_id=str(db_privacy.user_id),
-            who_can_write_me=map_to_proto(db_privacy.who_can_write_me),
-            who_can_add_to_groups=map_to_proto(db_privacy.who_can_add_to_groups),
-            who_can_see_phone=map_to_proto(db_privacy.who_can_see_phone),
-            who_can_see_last_seen=map_to_proto(db_privacy.who_can_see_last_seen),
-            updated_at=ts,
-        )
-    
-    
     async def GetMyPrivacy(self, request, context):
         current_user_id = await self._require_current_user_id(context)
 
@@ -373,4 +372,7 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
                 await context.abort(grpc.StatusCode.NOT_FOUND, "User not found")
 
             privacy = await self._get_or_create_privacy(session, user_uuid)
+            await session.commit()
+            await session.refresh(privacy)
+
             return self._db_privacy_to_proto(privacy)

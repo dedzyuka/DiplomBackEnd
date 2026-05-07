@@ -34,6 +34,7 @@ class PrivacySettings:
     who_can_add_to_groups: str
     who_can_see_phone: str
     who_can_see_last_seen: str
+    updated_at: Optional[str] = None
 
 
 @strawberry.input
@@ -42,11 +43,3 @@ class PrivacyUpdateInput:
     who_can_add_to_groups: Optional[str] = None
     who_can_see_phone: Optional[str] = None
     who_can_see_last_seen: Optional[str] = None
-
-@strawberry.type
-class PrivacySettings:
-    who_can_write_me: str
-    who_can_add_to_groups: str
-    who_can_see_phone: str
-    who_can_see_last_seen: str
-    updated_at: Optional[str] = None
