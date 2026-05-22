@@ -19,4 +19,4 @@ class Message:
     created_at: str
     updated_at: str
     deleted_at: Optional[str] = None
-    statuses: List[MessageStatusInfo] = strawberry.field(default_factory=list)
+    statuses: Optional[MessageStatusInfo] = strawberry.field(default_factory=list)

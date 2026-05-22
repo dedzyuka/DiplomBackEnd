@@ -158,6 +158,7 @@ message Message {
   repeated Attachment attachments = 13;
   repeated Reaction reactions = 14;
   repeated Mention mentions = 15;
+  repeated MessageStatus statuses = 16;
 }
 
 message MessageStatus {
