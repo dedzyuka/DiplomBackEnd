@@ -249,6 +249,13 @@ message ChatSummary {
   bool is_archived = 13;
 }
 
+message SearchMessagesRequest {
+  string chat_id = 1;
+  string query = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
 // ========== Request / Response Messages ==========
 
 // --- Users ---
@@ -575,6 +582,7 @@ message ListMessagesRequest {
   optional int64 around_message_id = 4;
   int32 page_size = 5;
   string page_token = 6;
+  optional string search_query = 7;  // добавлено
 }
 
 message MessagesListResponse {
@@ -740,6 +748,7 @@ service MessageService {
   rpc StreamMessages(StreamMessagesRequest) returns (stream MessageEvent);
   rpc MarkAsDelivered(MarkAsDeliveredRequest) returns (google.protobuf.Empty);
   rpc MarkAsRead(MarkAsReadRequest) returns (google.protobuf.Empty);
+  rpc SearchMessages(SearchMessagesRequest) returns (MessagesListResponse);
 }
 
 service AttachmentService {

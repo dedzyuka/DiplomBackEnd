@@ -1,8 +1,7 @@
-# app/websocketSide/router.py
-
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -22,32 +21,37 @@ from protobuf import mess_pb2, mess_pb2_grpc
 from redis_c import OfflineMessage, RedisClient
 from session_auth import verify_access_session
 
-from sqlalchemy import select
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ws")
 
-
-class MessageSendPayload(BaseModel):
-    chat_id: str
-    content: Optional[str] = None
-    type: str = "text"          # можно завести Enum, но для простоты строка
-    message_metadata: Optional[dict] = None
-    reply_to_id: Optional[int] = None
-    client_message_id: Optional[str] = None
+HEARTBEAT_TIMEOUT = 60  # секунд без ping -> закрыть соединение
 
 
-class TypingPayload(BaseModel):
-    chat_id: str
+async def _get_chat_member_ids(chat_id: uuid.UUID) -> list[str]:
+    async with AsyncSessionLocal() as db:
+        rows = await db.execute(
+            select(ChatMember.user_id).where(
+                ChatMember.chat_id == chat_id,
+                ChatMember.status == DbMemberStatus.active,
+            )
+        )
+        return [str(uid) for uid in rows.scalars().all()]
 
 
-class ClientEnvelope(BaseModel):
-    event: str  # не ограничиваем строго, чтобы не падать при неизвестных
-    payload: Optional[dict] = None
+async def _assert_user_in_chat(chat_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+    async with AsyncSessionLocal() as db:
+        row = await db.execute(
+            select(ChatMember.user_id).where(
+                ChatMember.chat_id == chat_id,
+                ChatMember.user_id == user_id,
+                ChatMember.status == DbMemberStatus.active,
+            )
+        )
+        return row.scalar_one_or_none() is not None
 
 
 def _extract_access_token(websocket: WebSocket) -> Optional[str]:
-    """Извлекает access‑токен из заголовка или query параметров."""
     auth_header = websocket.headers.get("authorization")
     if auth_header:
         lower = auth_header.lower()
@@ -63,14 +67,11 @@ def _extract_access_token(websocket: WebSocket) -> Optional[str]:
 
 
 async def _resolve_user_id_from_token(websocket: WebSocket) -> Optional[str]:
-    """Проверяет токен через Redis и возвращает user_id."""
     token = _extract_access_token(websocket)
     if not token:
         return None
     principal = await verify_access_session(token)
-    if not principal:
-        return None
-    return principal.user_id
+    return principal.user_id if principal else None
 
 
 async def _validate_origin(websocket: WebSocket) -> bool:
@@ -80,33 +81,32 @@ async def _validate_origin(websocket: WebSocket) -> bool:
     return origin in settings.ALLOWED_ORIGINS
 
 
-async def _get_chat_member_ids(chat_id: uuid.UUID) -> list[str]:
-    """Возвращает список user_id активных участников чата."""
-    async with AsyncSessionLocal() as db:
-        rows = (
-            await db.execute(
-                select(ChatMember.user_id).where(
-                    ChatMember.chat_id == chat_id,
-                    ChatMember.status == DbMemberStatus.active,
-                )
-            )
-        ).scalars().all()
-        return [str(uid) for uid in rows]
+async def handle_redis_event(app, raw_data: str):
+    try:
+        data = json.loads(raw_data)
+        event_type = data.get("event")
+        payload = data.get("payload", {})
+        chat_id = payload.get("chat_id")
+        if not chat_id:
+            return
 
+        chat_uuid = uuid.UUID(chat_id)
+        members = await _get_chat_member_ids(chat_uuid)
 
-async def _assert_user_in_chat(chat_id: uuid.UUID, user_id: uuid.UUID) -> bool:
-    """Проверяет, состоит ли пользователь в чате."""
-    async with AsyncSessionLocal() as db:
-        row = (
-            await db.execute(
-                select(ChatMember.user_id).where(
-                    ChatMember.chat_id == chat_id,
-                    ChatMember.user_id == user_id,
-                    ChatMember.status == DbMemberStatus.active,
+        redis_client: RedisClient = app.state.redis_client
+        for user_id in members:
+            if await redis_client.is_user_online(user_id):
+                await manager.send_to_user(user_id, {"event": event_type, "payload": payload})
+            else:
+                offline_msg = OfflineMessage(
+                    event_type=event_type,
+                    payload=payload,
+                    chat_id=chat_id,
+                    recipient_id=user_id,
                 )
-            )
-        ).scalar_one_or_none()
-        return row is not None
+                await redis_client.enqueue_offline_message(offline_msg)
+    except Exception as e:
+        logger.error(f"Failed to process redis event: {e}")
 
 
 @router.websocket("/chat")
@@ -131,7 +131,6 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid user id in token")
         return
 
-    # Сохраняем токен для последующих gRPC-вызовов
     access_token = _extract_access_token(websocket)
     if not access_token:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Access token required")
@@ -141,12 +140,25 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
     connection = await manager.connect(websocket, str(current_user_id))
     await redis_client.add_online_user(str(current_user_id))
 
-    try:
-        # Доставляем накопленные офлайн‑сообщения
-        offline_messages = await redis_client.dequeue_all_offline_messages(str(current_user_id))
-        for item in offline_messages:
-            await manager.send_to_user(str(current_user_id), item.payload)
+    # --- Восстановление offline-событий ---
+    offline_messages = await redis_client.dequeue_all_offline_messages(str(current_user_id))
+    for msg in offline_messages:
+        await websocket.send_json({"event": msg.event_type, "payload": msg.payload})
 
+    # --- Heartbeat ---
+    last_ping_time = datetime.now(timezone.utc)
+
+    async def heartbeat_checker():
+        nonlocal last_ping_time
+        while True:
+            await asyncio.sleep(30)
+            if (datetime.now(timezone.utc) - last_ping_time).total_seconds() > HEARTBEAT_TIMEOUT:
+                await websocket.close(code=status.WS_1000_NORMAL_CLOSURE, reason="Heartbeat timeout")
+                break
+
+    heartbeat_task = asyncio.create_task(heartbeat_checker())
+
+    try:
         while True:
             raw = await websocket.receive_json()
             try:
@@ -157,13 +169,11 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
 
             # Обработка ping
             if envelope.event == "ping":
-                await websocket.send_json({
-                    "event": "pong",
-                    "server_time": datetime.now(timezone.utc).isoformat(),
-                })
+                last_ping_time = datetime.now(timezone.utc)
+                await websocket.send_json({"event": "pong", "server_time": last_ping_time.isoformat()})
                 continue
 
-            # Обработка typing-событий
+            # Обработка typing
             if envelope.event in {"typing.start", "typing.stop"}:
                 try:
                     payload = TypingPayload.model_validate(envelope.payload or {})
@@ -204,20 +214,17 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                     await websocket.send_json({"event": "error", "detail": "Access denied for chat"})
                     continue
 
-                # gRPC-клиент SendMessage
                 stub: mess_pb2_grpc.MessageServiceStub = websocket.app.state.message_stub
                 metadata = (("authorization", f"Bearer {access_token}"),)
 
-                # Формируем и отправляем запрос
                 grpc_request = mess_pb2.SendMessageRequest(
                     chat_id=str(chat_uuid),
                     sender_id=str(current_user_id),
                     content=payload.content or "",
-                    type=mess_pb2.TEXT,  # в MVP только текст, позже расширить
+                    type=mess_pb2.TEXT,
                 )
                 if payload.reply_to_id:
                     grpc_request.reply_to_id = payload.reply_to_id
-                # вложения и упоминания можно добавить аналогично
 
                 try:
                     loop = asyncio.get_running_loop()
@@ -232,34 +239,33 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                     })
                     continue
 
-                # Формируем payload для рассылки по WebSocket
                 delivered_payload = {
-    "event": "message.new",
-    "payload": {
-        "message_id": grpc_response.message_id,
-        "chat_id": str(grpc_response.chat_id),
-        "sender_id": str(grpc_response.sender_id),
-        "content": grpc_response.content,
-        "created_at": grpc_response.created_at.ToDatetime().isoformat(),
-        "type": "text",
-        "reply_to_id": grpc_response.reply_to_id if grpc_response.HasField("reply_to_id") else None,
-    }
-}
+                    "event": "message.new",
+                    "payload": {
+                        "message_id": grpc_response.message_id,
+                        "chat_id": str(grpc_response.chat_id),
+                        "sender_id": str(grpc_response.sender_id),
+                        "content": grpc_response.content,
+                        "created_at": grpc_response.created_at.ToDatetime().isoformat(),
+                        "type": "text",
+                        "reply_to_id": grpc_response.reply_to_id if grpc_response.HasField("reply_to_id") else None,
+                    }
+                }
 
-                # Рассылаем всем активным участникам чата (включая отправителя)
+                # Рассылка через Redis (для остальных сервисов) – gRPC уже публикует событие, не нужно дублировать
+                # Но для WebSocket мы можем сразу разослать участникам
                 member_ids = await _get_chat_member_ids(chat_uuid)
-                await manager.send_to_users(member_ids, delivered_payload)
-
-                # Для офлайн‑пользователей кладём в очередь Redis
                 for user_id in member_ids:
-                    if not await redis_client.is_user_online(user_id):
+                    if await redis_client.is_user_online(user_id):
+                        await manager.send_to_user(user_id, delivered_payload)
+                    else:
                         offline_msg = OfflineMessage(
-                            sender_id=str(current_user_id),
-                            recipient_id=user_id,
+                            event_type="message.new",
                             payload=delivered_payload["payload"],
+                            chat_id=str(chat_uuid),
+                            recipient_id=user_id,
                         )
                         await redis_client.enqueue_offline_message(offline_msg)
-
                 continue
 
             # Неизвестное событие
@@ -271,5 +277,25 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
     except WebSocketDisconnect:
         pass
     finally:
+        heartbeat_task.cancel()
         await manager.disconnect(connection)
         await redis_client.remove_online_user(str(current_user_id))
+
+
+# --- Pydantic модели (должны быть определены выше, либо импортированы) ---
+class MessageSendPayload(BaseModel):
+    chat_id: str
+    content: Optional[str] = None
+    type: str = "text"
+    message_metadata: Optional[dict] = None
+    reply_to_id: Optional[int] = None
+    client_message_id: Optional[str] = None
+
+
+class TypingPayload(BaseModel):
+    chat_id: str
+
+
+class ClientEnvelope(BaseModel):
+    event: str
+    payload: Optional[dict] = None

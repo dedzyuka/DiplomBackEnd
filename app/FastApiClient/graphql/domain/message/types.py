@@ -1,11 +1,31 @@
 import strawberry
 from typing import Optional, List
 
+
+@strawberry.type
+class Attachment:
+    attachment_id: str
+    file_name: str
+    file_size: Optional[int] = None
+    mime_type: Optional[str] = None
+    storage_path: str
+    uploaded_at: str
+
+
+@strawberry.type
+class Reaction:
+    message_id: int
+    user_id: str
+    emoji: str
+    created_at: str
+
+
 @strawberry.type
 class MessageStatusInfo:
     user_id: str
     delivered_at: Optional[str] = None
     read_at: Optional[str] = None
+
 
 @strawberry.type
 class Message:
@@ -19,4 +39,6 @@ class Message:
     created_at: str
     updated_at: str
     deleted_at: Optional[str] = None
-    statuses: Optional[MessageStatusInfo] = strawberry.field(default_factory=list)
+    attachments: List[Attachment] = strawberry.field(default_factory=list)
+    reactions: List[Reaction] = strawberry.field(default_factory=list)
+    statuses: List[MessageStatusInfo] = strawberry.field(default_factory=list)

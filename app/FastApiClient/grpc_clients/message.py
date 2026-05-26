@@ -5,10 +5,10 @@ from FastApiClient.core.config import settings
 from FastApiClient.protos.protobuf import mess_pb2, mess_pb2_grpc
 from .base import BaseGrpcClient
 
+
 class MessageGrpcClient(BaseGrpcClient):
     def __init__(self):
-        super().__init__(settings.CHAT_GRPC_SERVER)  # MessageService на том же сервере?
-        # Или используйте отдельный адрес, если нужно. В текущем main.py gRPC-сервера все сервисы на одном порту, поэтому можно общий канал.
+        super().__init__(settings.CHAT_GRPC_SERVER)
         self.stub = mess_pb2_grpc.MessageServiceStub(self.channel)
 
     @staticmethod
@@ -59,7 +59,6 @@ class MessageGrpcClient(BaseGrpcClient):
 
     def list_messages(self, chat_id: str, page: int = 1, page_size: int = 50,
                       access_token: Optional[str] = None) -> mess_pb2.MessagesListResponse:
-        # преобразование page в page_token как offset
         page_token = str((page - 1) * page_size) if page > 1 else ""
         request = mess_pb2.ListMessagesRequest(
             chat_id=chat_id,
@@ -90,6 +89,30 @@ class MessageGrpcClient(BaseGrpcClient):
         except grpc.RpcError as e:
             self._handle_rpc_error(e)
 
+    def add_reaction(self, message_id: int, chat_id: str, emoji: str, access_token: Optional[str] = None) -> mess_pb2.Reaction:
+        request = mess_pb2.AddReactionRequest(
+            message_id=message_id,
+            chat_id=chat_id,
+            user_id="",  # будет заменён на сервере
+            emoji=emoji,
+        )
+        try:
+            return self.stub.AddReaction(request, timeout=5, metadata=self._auth_metadata(access_token))
+        except grpc.RpcError as e:
+            self._handle_rpc_error(e)
+
+    def remove_reaction(self, message_id: int, chat_id: str, emoji: str, access_token: Optional[str] = None) -> None:
+        request = mess_pb2.RemoveReactionRequest(
+            message_id=message_id,
+            chat_id=chat_id,
+            user_id="",
+            emoji=emoji,
+        )
+        try:
+            self.stub.RemoveReaction(request, timeout=5, metadata=self._auth_metadata(access_token))
+        except grpc.RpcError as e:
+            self._handle_rpc_error(e)
+
     def mark_as_delivered(self, message_id: int, chat_id: str, access_token: Optional[str] = None):
         request = mess_pb2.MarkAsDeliveredRequest(message_id=message_id, chat_id=chat_id)
         try:
@@ -101,5 +124,18 @@ class MessageGrpcClient(BaseGrpcClient):
         request = mess_pb2.MarkAsReadRequest(message_id=message_id, chat_id=chat_id)
         try:
             return self.stub.MarkAsRead(request, timeout=5, metadata=self._auth_metadata(access_token))
+        except grpc.RpcError as e:
+            self._handle_rpc_error(e)
+
+    def search_messages(self, chat_id: str, query: str, page: int = 1, page_size: int = 50,
+                        access_token: Optional[str] = None) -> mess_pb2.MessagesListResponse:
+        request = mess_pb2.SearchMessagesRequest(
+            chat_id=chat_id,
+            query=query,
+            page=page,
+            page_size=page_size,
+        )
+        try:
+            return self.stub.SearchMessages(request, timeout=5, metadata=self._auth_metadata(access_token))
         except grpc.RpcError as e:
             self._handle_rpc_error(e)

@@ -3,8 +3,10 @@ import strawberry
 from typing import Optional, List
 
 from FastApiClient.graphql.context import GraphQLContext
-from .utils.converter import from_grpc_message 
-from .types import Message
+from FastApiClient.graphql.domain.message.utils.converter import from_grpc_message
+from FastApiClient.graphql.domain.message.types import Message, Reaction
+from FastApiClient.utils.converter import from_grpc_reaction
+
 
 @strawberry.type
 class MessageMutations:
@@ -28,8 +30,7 @@ class MessageMutations:
                 access_token=access_token,
             )
         )
-
-        return from_grpc_message(grpc_msg)  # реализовать конвертацию
+        return from_grpc_message(grpc_msg)
 
     @strawberry.mutation
     async def update_message(
@@ -66,6 +67,45 @@ class MessageMutations:
             )
         )
         return True
+
+    @strawberry.mutation
+    async def add_reaction(
+        self,
+        info: strawberry.Info[GraphQLContext],
+        message_id: int,
+        chat_id: str,
+        emoji: str,
+    ) -> Reaction:
+        access_token = info.context.require_access_token()
+        grpc_reaction = await anyio.to_thread.run_sync(
+            lambda: info.context.message_client.add_reaction(
+                message_id=message_id,
+                chat_id=chat_id,
+                emoji=emoji,
+                access_token=access_token,
+            )
+        )
+        return from_grpc_reaction(grpc_reaction)
+
+    @strawberry.mutation
+    async def remove_reaction(
+        self,
+        info: strawberry.Info[GraphQLContext],
+        message_id: int,
+        chat_id: str,
+        emoji: str,
+    ) -> bool:
+        access_token = info.context.require_access_token()
+        await anyio.to_thread.run_sync(
+            lambda: info.context.message_client.remove_reaction(
+                message_id=message_id,
+                chat_id=chat_id,
+                emoji=emoji,
+                access_token=access_token,
+            )
+        )
+        return True
+
     @strawberry.mutation
     async def mark_as_delivered(
         self,

@@ -3,8 +3,9 @@ import strawberry
 from typing import List
 
 from FastApiClient.graphql.context import GraphQLContext
-from .utils.converter import from_grpc_message
-from .types import Message
+from FastApiClient.graphql.domain.message.utils.converter import from_grpc_message
+from FastApiClient.graphql.domain.message.types import Message
+
 
 @strawberry.type
 class MessageQueries:
@@ -37,6 +38,27 @@ class MessageQueries:
         resp = await anyio.to_thread.run_sync(
             lambda: info.context.message_client.list_messages(
                 chat_id=chat_id,
+                page=page,
+                page_size=page_size,
+                access_token=access_token,
+            )
+        )
+        return [from_grpc_message(msg) for msg in resp.messages]
+
+    @strawberry.field
+    async def search_messages(
+        self,
+        info: strawberry.Info[GraphQLContext],
+        chat_id: str,
+        query: str,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> List[Message]:
+        access_token = info.context.require_access_token()
+        resp = await anyio.to_thread.run_sync(
+            lambda: info.context.message_client.search_messages(
+                chat_id=chat_id,
+                query=query,
                 page=page,
                 page_size=page_size,
                 access_token=access_token,

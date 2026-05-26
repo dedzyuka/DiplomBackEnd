@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import datetime, timezone
 from typing import Optional
@@ -105,7 +106,16 @@ class RedisClient:
             removed += 1
 
         return removed
+    async def publish_event(self, channel: str, event_type: str, data: dict) -> None:
+        """Публикует событие в Redis канал."""
+        message = json.dumps({
+            "event": event_type,
+            "data": data
+        })
+        await self._redis.publish(channel, message)
 
+    async def publish(self, channel: str, message: str) -> None:
+        await self._redis.publish(channel, message)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_PREFIX = os.getenv("REDIS_PREFIX", "messenger")

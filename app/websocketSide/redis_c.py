@@ -9,27 +9,25 @@ import redis.asyncio as redis
 
 @dataclass
 class OfflineMessage:
-    sender_id: str
-    recipient_id: str
+    event_type: str
     payload: dict
+    chat_id: str
+    recipient_id: str   # добавляем
 
     def to_json(self) -> str:
-        return json.dumps(
-            {
-                "sender_id": self.sender_id,
-                "recipient_id": self.recipient_id,
-                "payload": self.payload,
-            },
-            ensure_ascii=False,
-        )
-
+        return json.dumps({
+            "event_type": self.event_type,
+            "payload": self.payload,
+            "chat_id": self.chat_id,
+            "recipient_id": self.recipient_id,
+        })
     @classmethod
     def from_json(cls, raw: str) -> "OfflineMessage":
         data = json.loads(raw)
         return cls(
-            sender_id=data["sender_id"],
-            recipient_id=data["recipient_id"],
+            event_type=data["event_type"],
             payload=data["payload"],
+            chat_id=data["chat_id"],
         )
 
 
@@ -74,7 +72,7 @@ class RedisClient:
 
     async def enqueue_offline_message(self, message: OfflineMessage) -> None:
         await self._require_client().rpush(
-            self._offline_queue_key(message.recipient_id),
+            self._offline_queue_key(message.recipient_id),   # предполагается, что в OfflineMessage есть recipient_id? Нужно добавить поле.
             message.to_json(),
         )
 

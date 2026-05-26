@@ -4,7 +4,7 @@ import grpc
 import warnings
 
 from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
-from protobuf import mess_pb2 as mess__pb2
+import mess_pb2 as mess__pb2
 
 GRPC_GENERATED_VERSION = '1.78.0'
 GRPC_VERSION = grpc.__version__
@@ -1804,11 +1804,6 @@ class MessageServiceStub(object):
                 request_serializer=mess__pb2.MarkAsReadRequest.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
-        self.SearchMessages = channel.unary_unary(
-                '/messenger.MessageService/SearchMessages',
-                request_serializer=mess__pb2.SearchMessagesRequest.SerializeToString,
-                response_deserializer=mess__pb2.MessagesListResponse.FromString,
-                _registered_method=True)
 
 
 class MessageServiceServicer(object):
@@ -1880,12 +1875,6 @@ class MessageServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def SearchMessages(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
 
 def add_MessageServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -1943,11 +1932,6 @@ def add_MessageServiceServicer_to_server(servicer, server):
                     servicer.MarkAsRead,
                     request_deserializer=mess__pb2.MarkAsReadRequest.FromString,
                     response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
-            ),
-            'SearchMessages': grpc.unary_unary_rpc_method_handler(
-                    servicer.SearchMessages,
-                    request_deserializer=mess__pb2.SearchMessagesRequest.FromString,
-                    response_serializer=mess__pb2.MessagesListResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -2247,33 +2231,6 @@ class MessageService(object):
             '/messenger.MessageService/MarkAsRead',
             mess__pb2.MarkAsReadRequest.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def SearchMessages(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/messenger.MessageService/SearchMessages',
-            mess__pb2.SearchMessagesRequest.SerializeToString,
-            mess__pb2.MessagesListResponse.FromString,
             options,
             channel_credentials,
             insecure,

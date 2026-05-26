@@ -3,6 +3,7 @@ from FastApiClient.graphql.domain.message.types import Message as GQLMessage, Me
 from FastApiClient.utils.converter import _ts_to_iso
 
 def from_grpc_message(grpc_msg: mess_pb2.Message) -> GQLMessage:
+    
     return GQLMessage(
         message_id=grpc_msg.message_id,
         chat_id=grpc_msg.chat_id,
