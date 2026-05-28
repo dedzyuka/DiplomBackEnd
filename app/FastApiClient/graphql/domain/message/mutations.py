@@ -6,6 +6,7 @@ from FastApiClient.graphql.context import GraphQLContext
 from FastApiClient.graphql.domain.message.utils.converter import from_grpc_message
 from FastApiClient.graphql.domain.message.types import Message, Reaction
 from FastApiClient.utils.converter import from_grpc_reaction
+from FastApiClient.protos.protobuf import mess_pb2
 
 
 @strawberry.type
@@ -17,9 +18,26 @@ class MessageMutations:
         chat_id: str,
         content: str,
         reply_to_id: Optional[int] = None,
+        attachment_id: Optional[str] = None,   # новое поле
     ) -> Message:
         current_user_id = info.context.require_user_id()
         access_token = info.context.require_access_token()
+
+        # Создаём gRPC запрос
+        grpc_request = mess_pb2.SendMessageRequest(
+            chat_id=chat_id,
+            sender_id=current_user_id,
+            content=content,
+            type=mess_pb2.TEXT,
+        )
+        if reply_to_id is not None:
+            grpc_request.reply_to_id = reply_to_id
+
+        # Добавляем attachment, если передан
+        if attachment_id:
+            attachment_input = grpc_request.attachments.add()
+            attachment_input.attachment_id = attachment_id
+            # Остальные поля не обязательны, т.к. attachment уже существует
 
         grpc_msg = await anyio.to_thread.run_sync(
             lambda: info.context.message_client.send_message(
@@ -28,6 +46,8 @@ class MessageMutations:
                 sender_id=current_user_id,
                 reply_to_id=reply_to_id,
                 access_token=access_token,
+                # Дополнительно передаём attachments
+                attachments=[{"attachment_id": attachment_id}] if attachment_id else None,
             )
         )
         return from_grpc_message(grpc_msg)

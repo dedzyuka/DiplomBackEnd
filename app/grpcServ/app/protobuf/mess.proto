@@ -529,10 +529,11 @@ message UnbanMemberRequest {
 
 // --- Messages ---
 message AttachmentInput {
-  string file_name = 1;
-  optional int64 file_size = 2;
-  optional string mime_type = 3;
-  string storage_path = 4;   // pre-uploaded path
+  optional string attachment_id = 1;   // новый UUID
+  string file_name = 2;
+  optional int64 file_size = 3;
+  optional string mime_type = 4;
+  string storage_path = 5;
 }
 
 message SendMessageRequest {

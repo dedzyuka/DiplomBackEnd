@@ -4,7 +4,7 @@ import uuid
 import grpc
 from google.protobuf.empty_pb2 import Empty
 from google.protobuf.timestamp_pb2 import Timestamp
-from sqlalchemy import inspect, select
+from sqlalchemy import delete, inspect, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -252,75 +252,35 @@ class ContactServicer(mess_pb2_grpc.ContactServiceServicer):
 
     async def RemoveContact(self, request, context):
         current_user_id = await self._require_current_user_id(context)
-
         if current_user_id != request.user_id:
-            await context.abort(
-                grpc.StatusCode.PERMISSION_DENIED,
-                "Cannot remove contact for another user",
-            )
-
-        try:
-            user_uuid = self._parse_uuid(request.user_id, "user_id", context)
-            contact_uuid = self._parse_uuid(request.contact_user_id, "contact_user_id", context)
-        except ValueError as e:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
-
+            await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Cannot remove contact for another user")
+        user_uuid = uuid.UUID(request.user_id)
+        contact_uuid = uuid.UUID(request.contact_user_id)
         async with AsyncSessionLocal() as session:
-            stmt = (
-                select(Contact)
-                .where(Contact.user_id == user_uuid, Contact.contact_user_id == contact_uuid)
-                .options(selectinload(Contact.contact_user))
+            # Удаляем обе записи
+            from sqlalchemy import and_, or_
+            stmt = delete(Contact).where(
+                or_(
+                    and_(Contact.user_id == user_uuid, Contact.contact_user_id == contact_uuid),
+                    and_(Contact.user_id == contact_uuid, Contact.contact_user_id == user_uuid)
+                )
             )
-            result = await session.execute(stmt)
-            contact = result.scalar_one_or_none()
-            if contact:
-                await session.delete(contact)
-
+            await session.execute(stmt)
             await session.commit()
             return Empty()
 
     async def ListContacts(self, request, context):
         current_user_id = await self._require_current_user_id(context)
-
         if current_user_id != request.user_id:
-            await context.abort(
-                grpc.StatusCode.PERMISSION_DENIED,
-                "Cannot list contacts for another user",
-            )
-
-        try:
-            user_uuid = self._parse_uuid(request.user_id, "user_id", context)
-        except ValueError as e:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
-
+            await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Cannot list contacts for another user")
+        user_uuid = uuid.UUID(request.user_id)
         page_size = max(1, min(request.page_size or 20, 100))
-
-        try:
-            offset = int(request.page_token or "0")
-        except ValueError:
-            offset = 0
-
-        filters = [Contact.user_id == user_uuid]
-
-        # Если status = CONTACT_STATUS_UNSPECIFIED / 0, значит фильтр не применяем.
-        # request.HasField("status") для обычного enum в proto3 может падать,
-        # поэтому используем обычную проверку значения.
-        if (
-            request.status != mess_pb2.ContactStatus.CONTACT_STATUS_UNSPECIFIED
-            and request.status in self._STATUS_PROTO_TO_DB
-        ):
-            filters.append(Contact.status == self._STATUS_PROTO_TO_DB[request.status])
-
+        offset = int(request.page_token or "0") if request.page_token else 0
         async with AsyncSessionLocal() as session:
-            stmt = (
-                select(Contact)
-                .options(selectinload(Contact.contact_user))
-                .where(*filters)
-                .order_by(Contact.updated_at.desc())
-                .offset(offset)
-                .limit(page_size)
-            )
-
+            stmt = select(Contact).where(
+                Contact.user_id == user_uuid,
+                Contact.status == DbContactStatus.accepted
+            ).order_by(Contact.updated_at.desc()).offset(offset).limit(page_size)
             contacts = (await session.execute(stmt)).scalars().all()
 
             next_offset = offset + len(contacts)

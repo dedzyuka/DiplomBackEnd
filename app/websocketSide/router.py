@@ -14,9 +14,9 @@ from sqlalchemy import select
 
 from config import settings
 from database import AsyncSessionLocal
-from enums import MemberStatus as DbMemberStatus, MessageType as DbMessageType
+from enums import MemberStatus as DbMemberStatus
 from manager import manager
-from models import ChatMember, Message
+from models import ChatMember
 from protobuf import mess_pb2, mess_pb2_grpc
 from redis_c import OfflineMessage, RedisClient
 from session_auth import verify_access_session
@@ -25,7 +25,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ws")
 
-HEARTBEAT_TIMEOUT = 60  # секунд без ping -> закрыть соединение
+HEARTBEAT_TIMEOUT = 60
+class MessageAckPayload(BaseModel):
+    message_id: int
+    chat_id: str
 
 
 async def _get_chat_member_ids(chat_id: uuid.UUID) -> list[str]:
@@ -82,18 +85,21 @@ async def _validate_origin(websocket: WebSocket) -> bool:
 
 
 async def handle_redis_event(app, raw_data: str):
+    """Обработчик событий из Redis – рассылка online и сохранение в offline-очередь."""
     try:
         data = json.loads(raw_data)
         event_type = data.get("event")
         payload = data.get("payload", {})
         chat_id = payload.get("chat_id")
+
         if not chat_id:
+            logger.warning("Redis event without chat_id: %s", data)
             return
 
         chat_uuid = uuid.UUID(chat_id)
         members = await _get_chat_member_ids(chat_uuid)
-
         redis_client: RedisClient = app.state.redis_client
+
         for user_id in members:
             if await redis_client.is_user_online(user_id):
                 await manager.send_to_user(user_id, {"event": event_type, "payload": payload})
@@ -135,6 +141,8 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
     if not access_token:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Access token required")
         return
+    
+    
 
     redis_client: RedisClient = websocket.app.state.redis_client
     connection = await manager.connect(websocket, str(current_user_id))
@@ -239,34 +247,30 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                     })
                     continue
 
-                delivered_payload = {
-                    "event": "message.new",
-                    "payload": {
-                        "message_id": grpc_response.message_id,
-                        "chat_id": str(grpc_response.chat_id),
-                        "sender_id": str(grpc_response.sender_id),
-                        "content": grpc_response.content,
-                        "created_at": grpc_response.created_at.ToDatetime().isoformat(),
-                        "type": "text",
-                        "reply_to_id": grpc_response.reply_to_id if grpc_response.HasField("reply_to_id") else None,
-                    }
-                }
-
-                # Рассылка через Redis (для остальных сервисов) – gRPC уже публикует событие, не нужно дублировать
-                # Но для WebSocket мы можем сразу разослать участникам
-                member_ids = await _get_chat_member_ids(chat_uuid)
-                for user_id in member_ids:
-                    if await redis_client.is_user_online(user_id):
-                        await manager.send_to_user(user_id, delivered_payload)
-                    else:
-                        offline_msg = OfflineMessage(
-                            event_type="message.new",
-                            payload=delivered_payload["payload"],
-                            chat_id=str(chat_uuid),
-                            recipient_id=user_id,
-                        )
-                        await redis_client.enqueue_offline_message(offline_msg)
+                # Сообщение сохранено, событие будет опубликовано gRPC-сервером в Redis.
+                # Никакой дополнительной рассылки здесь не делаем.
+                # Можно опционально отправить клиенту подтверждение:
+                # await websocket.send_json({"event": "message.sent", "payload": {"message_id": grpc_response.message_id}})
                 continue
+
+            if envelope.event == "message.ack":
+                try:
+                    payload = MessageAckPayload.model_validate(envelope.payload or {})
+                    message_id = payload.message_id
+                    # Вызов gRPC MarkAsDelivered
+                    stub: mess_pb2_grpc.MessageServiceStub = websocket.app.state.message_stub
+                    metadata = (("authorization", f"Bearer {access_token}"),)
+                    grpc_request = mess_pb2.MarkAsDeliveredRequest(
+                        message_id=message_id,
+                        chat_id=payload.chat_id,  # нужно добавить chat_id в payload
+                    )
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(
+                        None,
+                        lambda: stub.MarkAsDelivered(grpc_request, timeout=5, metadata=metadata)
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to process message.ack: {e}")
 
             # Неизвестное событие
             await websocket.send_json({
@@ -282,7 +286,7 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
         await redis_client.remove_online_user(str(current_user_id))
 
 
-# --- Pydantic модели (должны быть определены выше, либо импортированы) ---
+# --- Pydantic модели ---
 class MessageSendPayload(BaseModel):
     chat_id: str
     content: Optional[str] = None

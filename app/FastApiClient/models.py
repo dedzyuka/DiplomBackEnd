@@ -1,3 +1,4 @@
+from typing import ClassVar, Optional
 from sqlalchemy import (
     Column, ForeignKeyConstraint, PrimaryKeyConstraint, String, Text, Boolean, ForeignKey, UniqueConstraint,
     CheckConstraint, Index, JSON, BigInteger, Integer, LargeBinary,

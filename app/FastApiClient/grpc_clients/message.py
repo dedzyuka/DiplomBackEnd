@@ -18,16 +18,16 @@ class MessageGrpcClient(BaseGrpcClient):
         return None
 
     def send_message(
-        self,
-        chat_id: str,
-        content: str,
-        sender_id: str,
-        reply_to_id: Optional[int] = None,
-        type: int = mess_pb2.TEXT,
-        attachments: Optional[List] = None,
-        mentions: Optional[List[str]] = None,
-        access_token: Optional[str] = None,
-    ) -> mess_pb2.Message:
+    self,
+    chat_id: str,
+    content: str,
+    sender_id: str,
+    reply_to_id: Optional[int] = None,
+    type: int = mess_pb2.TEXT,
+    attachments: Optional[List[dict]] = None,   # новый параметр
+    mentions: Optional[List[str]] = None,
+    access_token: Optional[str] = None,
+) -> mess_pb2.Message:
         req_kwargs = {
             "chat_id": chat_id,
             "sender_id": sender_id,
@@ -37,9 +37,14 @@ class MessageGrpcClient(BaseGrpcClient):
         if reply_to_id is not None:
             req_kwargs["reply_to_id"] = reply_to_id
         if attachments:
-            req_kwargs["attachments"] = attachments
+            # Преобразуем список dict в protobuf AttachmentInput
+            for att in attachments:
+                att_input = req_kwargs.setdefault("attachments", []).append(
+                    mess_pb2.AttachmentInput(attachment_id=att.get("attachment_id"))
+                )
         if mentions:
             req_kwargs["mentions"] = mentions
+
         request = mess_pb2.SendMessageRequest(**req_kwargs)
         try:
             return self.stub.SendMessage(

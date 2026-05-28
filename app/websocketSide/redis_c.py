@@ -12,7 +12,7 @@ class OfflineMessage:
     event_type: str
     payload: dict
     chat_id: str
-    recipient_id: str   # добавляем
+    recipient_id: str
 
     def to_json(self) -> str:
         return json.dumps({
@@ -21,6 +21,7 @@ class OfflineMessage:
             "chat_id": self.chat_id,
             "recipient_id": self.recipient_id,
         })
+
     @classmethod
     def from_json(cls, raw: str) -> "OfflineMessage":
         data = json.loads(raw)
@@ -28,6 +29,7 @@ class OfflineMessage:
             event_type=data["event_type"],
             payload=data["payload"],
             chat_id=data["chat_id"],
+            recipient_id=data["recipient_id"],
         )
 
 
@@ -72,7 +74,7 @@ class RedisClient:
 
     async def enqueue_offline_message(self, message: OfflineMessage) -> None:
         await self._require_client().rpush(
-            self._offline_queue_key(message.recipient_id),   # предполагается, что в OfflineMessage есть recipient_id? Нужно добавить поле.
+            self._offline_queue_key(message.recipient_id),
             message.to_json(),
         )
 

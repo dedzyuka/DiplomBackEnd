@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     USER_GRPC_SERVER: str = "localhost:50051"
     AUTH_GRPC_SERVER: str = "localhost:50052"
     CHAT_GRPC_SERVER: str = "localhost:50053"
+    ATTACHMENT_GRPC_SERVER: str = "localhost:50056"
 
     # Auth/JWT settings
     SECRET_KEY: str = "change-me-in-production"
