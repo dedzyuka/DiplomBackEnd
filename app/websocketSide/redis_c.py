@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 import redis.asyncio as redis
+import logging
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -64,7 +66,14 @@ class RedisClient:
         return f"ws:offline:{user_id}"
 
     async def add_online_user(self, user_id: str) -> None:
-        await self._require_client().sadd(self._online_users_key(), user_id)
+        try:
+            client = self._require_client()
+            key = self._online_users_key()
+            result = await client.sadd(key, user_id)
+            logger.info(f"✅ SADD {key} {user_id} -> {result}")
+        except Exception as e:
+            logger.error(f"❌ Failed to add online user {user_id}: {e}", exc_info=True)
+            raise
 
     async def remove_online_user(self, user_id: str) -> None:
         await self._require_client().srem(self._online_users_key(), user_id)
@@ -85,3 +94,6 @@ class RedisClient:
         if raw_messages:
             await redis_client.delete(key)
         return [OfflineMessage.from_json(raw) for raw in raw_messages]
+    
+    async def publish(self, channel: str, message: str) -> None:
+        await self._require_client().publish(channel, message)

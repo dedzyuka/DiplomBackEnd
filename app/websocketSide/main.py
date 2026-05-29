@@ -7,7 +7,8 @@ import logging
 
 from fastapi import FastAPI, logger
 from fastapi.middleware.cors import CORSMiddleware
-import grpc  # обычный синхронный grpc
+import grpc
+import websocket  # обычный синхронный grpc
 
 from config import settings
 from redis_c import RedisClient
@@ -30,7 +31,10 @@ async def lifespan(app: FastAPI):
     channel = grpc.insecure_channel(settings.CHAT_GRPC_SERVER)
     message_stub = mess_pb2_grpc.MessageServiceStub(channel)
     app.state.message_stub = message_stub
-
+    if redis_client is None or redis_client.client is None:
+        logger.error("Redis client not initialized")
+        await websocket.close()
+        return
     # Подписка на события Redis
     pubsub = redis_client.client.pubsub()          # <- Убрали await
     await pubsub.subscribe(settings.REDIS_EVENTS_CHANNEL)  # <- await здесь

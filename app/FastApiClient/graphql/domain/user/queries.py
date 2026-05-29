@@ -1,14 +1,8 @@
-from typing import List, Optional
-
 import strawberry
-
+from typing import List, Optional
 from FastApiClient.graphql.context import GraphQLContext
 from FastApiClient.utils.converter import _ts_to_iso, from_grpc_user
-from .types import User
-from .types import PrivacySettings
-from FastApiClient.core.redis_client import redis_client 
-
-
+from .types import User, PrivacySettings
 
 @strawberry.type
 class UserQueries:
@@ -17,11 +11,8 @@ class UserQueries:
         grpc_user = info.context.user_client.get_user(id)
         if not grpc_user:
             return None
-        
-        # Проверяем онлайн-статус в Redis
-        is_online = await redis_client.sismember("ws:online_users", id)
+        is_online = await info.context.redis_client.sismember("ws:online_users", id)
         grpc_user.is_online = is_online
-        
         return from_grpc_user(grpc_user)
 
     @strawberry.field
@@ -32,9 +23,24 @@ class UserQueries:
         *,
         info: strawberry.Info[GraphQLContext],
     ) -> List[User]:
-        """Поиск пользователей."""
         response = info.context.user_client.search_users(query, page)
-        return [from_grpc_user(u) for u in response.users]
+        users = []
+        for u in response.users:
+            is_online = await info.context.redis_client.sismember("ws:online_users", u.user_id)
+            u.is_online = is_online
+            users.append(from_grpc_user(u))
+        return users
+
+    @strawberry.field
+    async def my_profile(self, info: strawberry.Info[GraphQLContext]) -> Optional[User]:
+        grpc_user = info.context.user_client.get_my_profile(
+            access_token=info.context.require_access_token()
+        )
+        if grpc_user:
+            is_online = await info.context.redis_client.sismember("ws:online_users", grpc_user.user_id)
+            grpc_user.is_online = is_online
+        return from_grpc_user(grpc_user)
+
 
     @strawberry.field
     async def my_profile(self, info: strawberry.Info[GraphQLContext]) -> Optional[User]:

@@ -3,7 +3,8 @@ import strawberry
 from typing import List
 
 from FastApiClient.graphql.context import GraphQLContext
-from FastApiClient.utils.converter import from_grpc_chat
+from FastApiClient.utils.converter import from_grpc_chat, from_grpc_user
+from FastApiClient.graphql.domain.user.types import User
 from .types import Chat
 
 
@@ -51,7 +52,7 @@ class ChatQueries:
         info: strawberry.Info[GraphQLContext],
         page: int = 1,
         page_size: int = 50,
-    ) -> List[str]:
+    ) -> List[User]:   # изменён тип возврата
         access_token = info.context.require_access_token()
         current_user_id = info.context.require_user_id()
 
@@ -64,4 +65,15 @@ class ChatQueries:
                 current_user_id=current_user_id,
             )
         )
-        return [member.user_id for member in grpc_resp.members]
+        # grpc_resp.members – список объектов ChatMember, у каждого есть user_id
+        users = []
+        for member in grpc_resp.members:
+            # Получаем пользователя через user_client
+            grpc_user = await anyio.to_thread.run_sync(
+                lambda: info.context.user_client.get_user(member.user_id)
+            )
+            if grpc_user:
+                is_online = await info.context.redis_client.sismember("ws:online_users", grpc_user.user_id)
+                grpc_user.is_online = is_online
+                users.append(from_grpc_user(grpc_user))
+        return users

@@ -33,8 +33,16 @@ class ContactQueries:
             page_size=page_size,
             access_token=access_token,
         )
+        contacts = []
+        for grpc_contact in response.contacts:
+            contact = from_grpc_contact(grpc_contact)
+            # Добавляем онлайн-статус для contact_user, если он есть
+            if contact.contact_user:
+                is_online = await info.context.redis_client.sismember("ws:online_users", contact.contact_user.user_id)
+                contact.contact_user.is_online = is_online
+            contacts.append(contact)
+        return contacts
 
-        return [from_grpc_contact(contact) for contact in response.contacts]
 
     @strawberry.field
     async def pending(
@@ -67,21 +75,23 @@ class ContactQueries:
         page: int = 1,
         page_size: int = 20,
     ) -> List[Contact]:
-        """
-        Входящие заявки текущего пользователя.
-        contact_user_id = current_user_id AND status = pending
-        """
+        # аналогично, для каждого contact_user добавляем is_online
         current_user_id = info.context.require_user_id()
         access_token = info.context.require_access_token()
-
         response = info.context.contact_client.list_incoming_contacts(
             user_id=current_user_id,
             page=page,
             page_size=page_size,
             access_token=access_token,
         )
-
-        return [from_grpc_contact(contact) for contact in response.contacts]
+        contacts = []
+        for grpc_contact in response.contacts:
+            contact = from_grpc_contact(grpc_contact)
+            if contact.contact_user:
+                is_online = await info.context.redis_client.sismember("ws:online_users", contact.contact_user.user_id)
+                contact.contact_user.is_online = is_online
+            contacts.append(contact)
+        return contacts
 
     @strawberry.field
     async def accepted(

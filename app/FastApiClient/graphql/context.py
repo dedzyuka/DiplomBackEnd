@@ -1,12 +1,9 @@
 from typing import Optional
-
 from fastapi import Request
 from strawberry.fastapi import BaseContext
-
 from FastApiClient.core.session_auth import verify_access_session
-from FastApiClient.grpc_clients import auth_client, user_client, chat_client
-from FastApiClient.grpc_clients import message_client, contact_client
-
+from FastApiClient.grpc_clients import auth_client, user_client, chat_client, message_client, contact_client
+from FastApiClient.core.redis_client import redis_client as global_redis_client
 
 class GraphQLContext(BaseContext):
     def __init__(
@@ -20,17 +17,20 @@ class GraphQLContext(BaseContext):
         session_id: Optional[str] = None,
         access_token: Optional[str] = None,
         is_access_token_verified: bool = False,
+        redis_client=None,
     ):
         self.request = request
         self.user_client = user_client
         self.auth_client = auth_client
         self.chat_client = chat_client
         self.contact_client = contact_client
+        self.message_client = message_client
         self.current_user_id = current_user_id
         self.session_id = session_id
         self.access_token = access_token
         self.is_access_token_verified = is_access_token_verified
-        self.message_client = message_client
+        self.redis_client = redis_client or global_redis_client
+
 
     def require_access_token(self) -> str:
         if not self.is_access_token_verified or not self.access_token:
@@ -89,7 +89,6 @@ def _extract_bearer_token(request: Request) -> Optional[str]:
 
 async def get_context(request: Request) -> GraphQLContext:
     token = _extract_bearer_token(request)
-
     current_user_id: Optional[str] = None
     session_id: Optional[str] = None
     is_access_token_verified = False
@@ -113,4 +112,5 @@ async def get_context(request: Request) -> GraphQLContext:
         session_id=session_id,
         access_token=verified_access_token,
         is_access_token_verified=is_access_token_verified,
+        redis_client=global_redis_client,   # передаём
     )
