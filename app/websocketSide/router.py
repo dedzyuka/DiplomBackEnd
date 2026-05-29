@@ -86,9 +86,9 @@ async def _validate_origin(websocket: WebSocket) -> bool:
 
 async def handle_redis_event(app, raw_data: str):
     try:
+        logger.info(f"📡 Redis raw event: {raw_data[:200]}")
         data = json.loads(raw_data)
         event_type = data.get("event")
-        logger.info(f"Received redis event: {event_type}")  # <-- добавить
         payload = data.get("payload", {})
         chat_id = payload.get("chat_id")
 
@@ -98,10 +98,14 @@ async def handle_redis_event(app, raw_data: str):
 
         chat_uuid = uuid.UUID(chat_id)
         members = await _get_chat_member_ids(chat_uuid)
+        logger.info(f"📢 Event '{event_type}' for chat {chat_id}, members: {members}")
+
         redis_client: RedisClient = app.state.redis_client
 
         for user_id in members:
-            if await redis_client.is_user_online(user_id):
+            is_online = await redis_client.is_user_online(user_id)
+            logger.debug(f"User {user_id} online: {is_online}")
+            if is_online:
                 await manager.send_to_user(user_id, {"event": event_type, "payload": payload})
             else:
                 offline_msg = OfflineMessage(
@@ -112,7 +116,7 @@ async def handle_redis_event(app, raw_data: str):
                 )
                 await redis_client.enqueue_offline_message(offline_msg)
     except Exception as e:
-        logger.error(f"Failed to process redis event: {e}")
+        logger.error(f"Failed to process redis event: {e}", exc_info=True)
 
 
 @router.websocket("/chat")

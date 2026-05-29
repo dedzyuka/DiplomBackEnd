@@ -1726,6 +1726,8 @@ def from_grpc_contact(grpc_contact: mess_pb2.Contact) -> Contact:
     )
 
 ===== app/FastApiClient/graphql/domain/message/mutations.py =====
+# app/FastApiClient/graphql/domain/message/mutations.py
+
 import anyio
 import strawberry
 from typing import Optional, List
@@ -1746,12 +1748,11 @@ class MessageMutations:
         chat_id: str,
         content: str,
         reply_to_id: Optional[int] = None,
-        attachment_id: Optional[str] = None,   # новое поле
+        attachment_id: Optional[str] = None,
     ) -> Message:
         current_user_id = info.context.require_user_id()
         access_token = info.context.require_access_token()
 
-        # Создаём gRPC запрос
         grpc_request = mess_pb2.SendMessageRequest(
             chat_id=chat_id,
             sender_id=current_user_id,
@@ -1761,11 +1762,9 @@ class MessageMutations:
         if reply_to_id is not None:
             grpc_request.reply_to_id = reply_to_id
 
-        # Добавляем attachment, если передан
         if attachment_id:
             attachment_input = grpc_request.attachments.add()
             attachment_input.attachment_id = attachment_id
-            # Остальные поля не обязательны, т.к. attachment уже существует
 
         grpc_msg = await anyio.to_thread.run_sync(
             lambda: info.context.message_client.send_message(
@@ -1774,11 +1773,10 @@ class MessageMutations:
                 sender_id=current_user_id,
                 reply_to_id=reply_to_id,
                 access_token=access_token,
-                # Дополнительно передаём attachments
                 attachments=[{"attachment_id": attachment_id}] if attachment_id else None,
             )
         )
-        return from_grpc_message(grpc_msg)
+        return from_grpc_message(grpc_msg, current_user_id)
 
     @strawberry.mutation
     async def update_message(
@@ -1788,6 +1786,7 @@ class MessageMutations:
         chat_id: str,
         content: str,
     ) -> Message:
+        current_user_id = info.context.require_user_id()   # ← добавить
         access_token = info.context.require_access_token()
         grpc_msg = await anyio.to_thread.run_sync(
             lambda: info.context.message_client.update_message(
@@ -1797,7 +1796,8 @@ class MessageMutations:
                 access_token=access_token,
             )
         )
-        return from_grpc_message(grpc_msg)
+        # ← добавить current_user_id
+        return from_grpc_message(grpc_msg, current_user_id)
 
     @strawberry.mutation
     async def delete_message(
@@ -1901,23 +1901,6 @@ from FastApiClient.graphql.domain.message.types import Message
 @strawberry.type
 class MessageQueries:
     @strawberry.field
-    async def get_message(
-        self,
-        info: strawberry.Info[GraphQLContext],
-        message_id: int,
-        chat_id: str,
-    ) -> Message:
-        access_token = info.context.require_access_token()
-        grpc_msg = await anyio.to_thread.run_sync(
-            lambda: info.context.message_client.get_message(
-                message_id=message_id,
-                chat_id=chat_id,
-                access_token=access_token,
-            )
-        )
-        return from_grpc_message(grpc_msg)
-
-    @strawberry.field
     async def list_messages(
         self,
         info: strawberry.Info[GraphQLContext],
@@ -1926,6 +1909,7 @@ class MessageQueries:
         page_size: int = 50,
     ) -> List[Message]:
         access_token = info.context.require_access_token()
+        current_user_id = info.context.require_user_id()
         resp = await anyio.to_thread.run_sync(
             lambda: info.context.message_client.list_messages(
                 chat_id=chat_id,
@@ -1934,7 +1918,25 @@ class MessageQueries:
                 access_token=access_token,
             )
         )
-        return [from_grpc_message(msg) for msg in resp.messages]
+        return [from_grpc_message(msg, current_user_id) for msg in resp.messages]
+
+    @strawberry.field
+    async def get_message(
+        self,
+        info: strawberry.Info[GraphQLContext],
+        message_id: int,
+        chat_id: str,
+    ) -> Message:
+        access_token = info.context.require_access_token()
+        current_user_id = info.context.require_user_id()
+        grpc_msg = await anyio.to_thread.run_sync(
+            lambda: info.context.message_client.get_message(
+                message_id=message_id,
+                chat_id=chat_id,
+                access_token=access_token,
+            )
+        )
+        return from_grpc_message(grpc_msg, current_user_id)
 
     @strawberry.field
     async def search_messages(
@@ -2002,34 +2004,48 @@ class Message:
     attachments: List[Attachment] = strawberry.field(default_factory=list)
     reactions: List[Reaction] = strawberry.field(default_factory=list)
     statuses: List[MessageStatusInfo] = strawberry.field(default_factory=list)
-    delivered_at: Optional[str] = None
-    read_at: Optional[str] = None
+    delivered_at: Optional[str] = None      # <-- добавить
+    read_at: Optional[str] = None           # <-- добавить
 
 ===== app/FastApiClient/graphql/domain/message/utils/converter.py =====
 from FastApiClient.protos.protobuf import mess_pb2
 from FastApiClient.graphql.domain.message.types import Message as GQLMessage, MessageStatusInfo
-from FastApiClient.utils.converter import _ts_to_iso
+from FastApiClient.utils.converter import _ts_to_iso, from_grpc_attachment, from_grpc_reaction
+from FastApiClient.graphql.domain.message.types import (
+    Message as GraphQLMessage,
+    Attachment as GraphQLAttachment,
+    Reaction as GraphQLReaction,
+    MessageStatusInfo,
+)
 
-def from_grpc_message(grpc_msg: mess_pb2.Message) -> GQLMessage:
+def from_grpc_message(grpc_msg: mess_pb2.Message, current_user_id: str) -> GraphQLMessage:
+    attachments = [from_grpc_attachment(a) for a in grpc_msg.attachments]
+    reactions = [from_grpc_reaction(r) for r in grpc_msg.reactions]
     
-    return GQLMessage(
+    delivered_at = None
+    read_at = None
+    for s in grpc_msg.statuses:
+        if s.user_id == current_user_id:
+            delivered_at = _ts_to_iso(s.delivered_at) if s.HasField("delivered_at") else None
+            read_at = _ts_to_iso(s.read_at) if s.HasField("read_at") else None
+            break
+
+    return GraphQLMessage(
         message_id=grpc_msg.message_id,
         chat_id=grpc_msg.chat_id,
         sender_id=grpc_msg.sender_id,
         content=grpc_msg.content if grpc_msg.HasField("content") else None,
-        type="text",  # можно маппинг
+        type="text",
         reply_to_id=grpc_msg.reply_to_id if grpc_msg.HasField("reply_to_id") else None,
         is_edited=grpc_msg.is_edited,
         created_at=_ts_to_iso(grpc_msg.created_at),
         updated_at=_ts_to_iso(grpc_msg.updated_at),
         deleted_at=_ts_to_iso(grpc_msg.deleted_at) if grpc_msg.HasField("deleted_at") else None,
-        statuses=[
-            MessageStatusInfo(
-                user_id=s.user_id,
-                delivered_at=_ts_to_iso(s.delivered_at) if s.HasField("delivered_at") else None,
-                read_at=_ts_to_iso(s.read_at) if s.HasField("read_at") else None,
-            ) for s in grpc_msg.statuses
-        ],
+        attachments=attachments,
+        reactions=reactions,
+        statuses=[],
+        delivered_at=delivered_at,
+        read_at=read_at,
     )
 
 ===== app/FastApiClient/graphql/domain/user/mutations.py =====
@@ -6794,18 +6810,24 @@ def from_grpc_message_status(grpc_status) -> MessageStatusInfo:
     )
 
 
-def from_grpc_message(grpc_msg: mess_pb2.Message) -> GraphQLMessage:
-    """Преобразует protobuf Message в GraphQL Message с поддержкой вложений, реакций, статусов."""
+def from_grpc_message(grpc_msg: mess_pb2.Message, current_user_id: str) -> GraphQLMessage:
     attachments = [from_grpc_attachment(a) for a in grpc_msg.attachments]
     reactions = [from_grpc_reaction(r) for r in grpc_msg.reactions]
-    statuses = [from_grpc_message_status(s) for s in grpc_msg.statuses]
+    
+    delivered_at = None
+    read_at = None
+    for s in grpc_msg.statuses:
+        if s.user_id == current_user_id:
+            delivered_at = _ts_to_iso(s.delivered_at) if s.HasField("delivered_at") else None
+            read_at = _ts_to_iso(s.read_at) if s.HasField("read_at") else None
+            break
 
     return GraphQLMessage(
         message_id=grpc_msg.message_id,
         chat_id=grpc_msg.chat_id,
         sender_id=grpc_msg.sender_id,
         content=grpc_msg.content if grpc_msg.HasField("content") else None,
-        type="text",  # можно маппинг из grpc_msg.type
+        type="text",
         reply_to_id=grpc_msg.reply_to_id if grpc_msg.HasField("reply_to_id") else None,
         is_edited=grpc_msg.is_edited,
         created_at=_ts_to_iso(grpc_msg.created_at),
@@ -6813,7 +6835,9 @@ def from_grpc_message(grpc_msg: mess_pb2.Message) -> GraphQLMessage:
         deleted_at=_ts_to_iso(grpc_msg.deleted_at) if grpc_msg.HasField("deleted_at") else None,
         attachments=attachments,
         reactions=reactions,
-        statuses=statuses,
+        statuses=[],
+        delivered_at=delivered_at,
+        read_at=read_at,
     )
 
 ===== app/__init__.py =====
@@ -11494,6 +11518,7 @@ from services.models import Contact, User
 from services.converters.userConverter import db_user_to_proto
 
 
+
 class ContactServicer(mess_pb2_grpc.ContactServiceServicer):
     _STATUS_PROTO_TO_DB = {
         mess_pb2.ContactStatus.PENDING: DbContactStatus.pending,
@@ -11746,6 +11771,9 @@ class ContactServicer(mess_pb2_grpc.ContactServiceServicer):
             await session.commit()
             return Empty()
 
+    # app/grpcServ/app/services/contact.py
+# Найти метод ListContacts (примерно строка 180)
+
     async def ListContacts(self, request, context):
         current_user_id = await self._require_current_user_id(context)
         if current_user_id != request.user_id:
@@ -11754,10 +11782,18 @@ class ContactServicer(mess_pb2_grpc.ContactServiceServicer):
         page_size = max(1, min(request.page_size or 20, 100))
         offset = int(request.page_token or "0") if request.page_token else 0
         async with AsyncSessionLocal() as session:
-            stmt = select(Contact).where(
-                Contact.user_id == user_uuid,
-                Contact.status == DbContactStatus.accepted
-            ).order_by(Contact.updated_at.desc()).offset(offset).limit(page_size)
+            # ДОБАВЛЯЕМ selectinload для подгрузки связанного пользователя
+            stmt = (
+                select(Contact)
+                .options(selectinload(Contact.contact_user))   # <-- ЭТО КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
+                .where(
+                    Contact.user_id == user_uuid,
+                    Contact.status == DbContactStatus.accepted
+                )
+                .order_by(Contact.updated_at.desc())
+                .offset(offset)
+                .limit(page_size)
+            )
             contacts = (await session.execute(stmt)).scalars().all()
 
             next_offset = offset + len(contacts)
@@ -12375,16 +12411,19 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
         # Необязательный метод – можно оставить заглушку
         return mess_pb2.MessageStatusResponse()
 
+    # app/grpcServ/app/services/message.py
+
     async def MarkAsDelivered(self, request: mess_pb2.MarkAsDeliveredRequest, context) -> Empty:
         """
         Отмечает сообщение как доставленное для текущего пользователя.
+        Если статус отсутствует – создаёт его (доставлено, но не прочитано).
         Публикует событие status.update в Redis.
         """
         user_uuid = await require_current_user_uuid(context)
         chat_uuid = uuid.UUID(request.chat_id)
 
         async with AsyncSessionLocal() as session:
-            # Проверка членства в чате
+            # 1. Проверка членства в чате
             member = await session.execute(
                 select(ChatMember).where(
                     ChatMember.chat_id == chat_uuid,
@@ -12395,34 +12434,57 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             if not member.scalar_one_or_none():
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Not a member of this chat")
 
-            # Получаем статус сообщения
+            # 2. Найти сообщение (нужно для message_created_at)
+            msg_stmt = select(Message).where(
+                Message.message_id == request.message_id,
+                Message.chat_id == chat_uuid
+            )
+            message = (await session.execute(msg_stmt)).scalar_one_or_none()
+            if not message:
+                await context.abort(grpc.StatusCode.NOT_FOUND, "Message not found")
+
+            # 3. Поиск существующего статуса доставки/прочтения
             stmt = select(MessageStatus).where(
                 MessageStatus.message_id == request.message_id,
                 MessageStatus.user_id == user_uuid,
             )
             status = (await session.execute(stmt)).scalar_one_or_none()
+
+            now = datetime.now(timezone.utc)
+
             if not status:
-                await context.abort(grpc.StatusCode.NOT_FOUND, "Message status not found")
+                # Создаём новый статус – помечаем как доставленное, но не прочитанное
+                status = MessageStatus(
+                    message_id=request.message_id,
+                    user_id=user_uuid,
+                    message_created_at=message.created_at,
+                    delivered_at=now,
+                    read_at=None,               # не прочитано
+                )
+                session.add(status)
+            else:
+                # Если статус уже есть, обновляем delivered_at только если он ещё не установлен
+                if not status.delivered_at:
+                    status.delivered_at = now
 
-            # Если уже доставлено – ничего не делаем
-            if not status.delivered_at:
-                status.delivered_at = datetime.now(timezone.utc)
-                await session.commit()
+            await session.commit()
 
-                # Публикуем событие в Redis
-                event_data = {
-                    "event": "status.update",
-                    "payload": {
-                        "message_id": request.message_id,
-                        "chat_id": str(chat_uuid),
-                        "user_id": str(user_uuid),
-                        "delivered_at": status.delivered_at.isoformat(),
-                        "read_at": status.read_at.isoformat() if status.read_at else None,
-                    }
+            # 4. Публикация события в Redis для realtime-обновлений
+            event_data = {
+                "event": "status.update",
+                "payload": {
+                    "message_id": request.message_id,
+                    "chat_id": str(chat_uuid),
+                    "user_id": str(user_uuid),
+                    "delivered_at": status.delivered_at.isoformat() if status.delivered_at else None,
+                    "read_at": status.read_at.isoformat() if status.read_at else None,
                 }
-                await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
+            }
+            await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
 
         return Empty()
+
+    # app/grpcServ/app/services/message.py
 
     async def MarkAsRead(self, request: mess_pb2.MarkAsReadRequest, context) -> Empty:
         user_uuid = await require_current_user_uuid(context)
@@ -12440,31 +12502,55 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             if not member.scalar_one_or_none():
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Not a member of this chat")
 
+            # Пытаемся найти сообщение (нужно для message_created_at)
+            msg_stmt = select(Message).where(
+                Message.message_id == request.message_id,
+                Message.chat_id == chat_uuid
+            )
+            message = (await session.execute(msg_stmt)).scalar_one_or_none()
+            if not message:
+                await context.abort(grpc.StatusCode.NOT_FOUND, "Message not found")
+
+            # Ищем существующий статус
             stmt = select(MessageStatus).where(
                 MessageStatus.message_id == request.message_id,
                 MessageStatus.user_id == user_uuid,
             )
             status = (await session.execute(stmt)).scalar_one_or_none()
+
+            now = datetime.now(timezone.utc)
+
             if not status:
-                await context.abort(grpc.StatusCode.NOT_FOUND, "Message status not found")
-
-            if not status.read_at:
-                status.read_at = datetime.now(timezone.utc)
+                # Создаём новый статус (помечаем как доставленное и прочитанное)
+                status = MessageStatus(
+                    message_id=request.message_id,
+                    user_id=user_uuid,
+                    message_created_at=message.created_at,
+                    delivered_at=now,
+                    read_at=now,
+                )
+                session.add(status)
+            else:
+                # Если статус существует, обновляем read_at (если ещё не было)
+                if not status.read_at:
+                    status.read_at = now
                 if not status.delivered_at:
-                    status.delivered_at = status.read_at
-                await session.commit()
+                    status.delivered_at = now
 
-                event_data = {
-                    "event": "status.update",
-                    "payload": {
-                        "message_id": request.message_id,
-                        "chat_id": str(chat_uuid),
-                        "user_id": str(user_uuid),
-                        "delivered_at": status.delivered_at.isoformat(),
-                        "read_at": status.read_at.isoformat(),
-                    }
+            await session.commit()
+
+            # Публикуем событие в Redis (только если статус изменился)
+            event_data = {
+                "event": "status.update",
+                "payload": {
+                    "message_id": request.message_id,
+                    "chat_id": str(chat_uuid),
+                    "user_id": str(user_uuid),
+                    "delivered_at": status.delivered_at.isoformat() if status.delivered_at else None,
+                    "read_at": status.read_at.isoformat() if status.read_at else None,
                 }
-                await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
+            }
+            await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
 
         return Empty()
 
@@ -17066,7 +17152,7 @@ class OfflineMessage:
 
     def to_json(self) -> str:
         return json.dumps({
-            "event_type": self.event_type,
+            "event": self.event_type,
             "payload": self.payload,
             "chat_id": self.chat_id,
             "recipient_id": self.recipient_id,
@@ -17076,7 +17162,7 @@ class OfflineMessage:
     def from_json(cls, raw: str) -> "OfflineMessage":
         data = json.loads(raw)
         return cls(
-            event_type=data["event_type"],
+            event_type=data["event"],
             payload=data["payload"],
             chat_id=data["chat_id"],
             recipient_id=data["recipient_id"],
@@ -17225,9 +17311,9 @@ async def _validate_origin(websocket: WebSocket) -> bool:
 
 async def handle_redis_event(app, raw_data: str):
     try:
+        logger.info(f"📡 Redis raw event: {raw_data[:200]}")
         data = json.loads(raw_data)
         event_type = data.get("event")
-        logger.info(f"Received redis event: {event_type}")  # <-- добавить
         payload = data.get("payload", {})
         chat_id = payload.get("chat_id")
 
@@ -17237,10 +17323,14 @@ async def handle_redis_event(app, raw_data: str):
 
         chat_uuid = uuid.UUID(chat_id)
         members = await _get_chat_member_ids(chat_uuid)
+        logger.info(f"📢 Event '{event_type}' for chat {chat_id}, members: {members}")
+
         redis_client: RedisClient = app.state.redis_client
 
         for user_id in members:
-            if await redis_client.is_user_online(user_id):
+            is_online = await redis_client.is_user_online(user_id)
+            logger.debug(f"User {user_id} online: {is_online}")
+            if is_online:
                 await manager.send_to_user(user_id, {"event": event_type, "payload": payload})
             else:
                 offline_msg = OfflineMessage(
@@ -17251,7 +17341,7 @@ async def handle_redis_event(app, raw_data: str):
                 )
                 await redis_client.enqueue_offline_message(offline_msg)
     except Exception as e:
-        logger.error(f"Failed to process redis event: {e}")
+        logger.error(f"Failed to process redis event: {e}", exc_info=True)
 
 
 @router.websocket("/chat")

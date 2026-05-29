@@ -42,5 +42,5 @@ class Message:
     attachments: List[Attachment] = strawberry.field(default_factory=list)
     reactions: List[Reaction] = strawberry.field(default_factory=list)
     statuses: List[MessageStatusInfo] = strawberry.field(default_factory=list)
-    delivered_at: Optional[str] = None
-    read_at: Optional[str] = None
+    delivered_at: Optional[str] = None      # <-- добавить
+    read_at: Optional[str] = None           # <-- добавить

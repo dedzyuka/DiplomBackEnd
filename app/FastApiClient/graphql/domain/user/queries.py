@@ -6,18 +6,23 @@ from FastApiClient.graphql.context import GraphQLContext
 from FastApiClient.utils.converter import _ts_to_iso, from_grpc_user
 from .types import User
 from .types import PrivacySettings
+from FastApiClient.core.redis_client import redis_client 
+
 
 
 @strawberry.type
 class UserQueries:
     @strawberry.field
     async def get(self, id: str, info: strawberry.Info[GraphQLContext]) -> Optional[User]:
-        """Получить пользователя по ID."""
-        try:
-            grpc_user = info.context.user_client.get_user(id)
-            return from_grpc_user(grpc_user)
-        except ValueError:
+        grpc_user = info.context.user_client.get_user(id)
+        if not grpc_user:
             return None
+        
+        # Проверяем онлайн-статус в Redis
+        is_online = await redis_client.sismember("ws:online_users", id)
+        grpc_user.is_online = is_online
+        
+        return from_grpc_user(grpc_user)
 
     @strawberry.field
     async def search(

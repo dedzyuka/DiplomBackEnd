@@ -16,7 +16,7 @@ class OfflineMessage:
 
     def to_json(self) -> str:
         return json.dumps({
-            "event_type": self.event_type,
+            "event": self.event_type,
             "payload": self.payload,
             "chat_id": self.chat_id,
             "recipient_id": self.recipient_id,
@@ -26,7 +26,7 @@ class OfflineMessage:
     def from_json(cls, raw: str) -> "OfflineMessage":
         data = json.loads(raw)
         return cls(
-            event_type=data["event_type"],
+            event_type=data["event"],
             payload=data["payload"],
             chat_id=data["chat_id"],
             recipient_id=data["recipient_id"],
