@@ -17,6 +17,7 @@ from services.models import Contact, User
 from services.converters.userConverter import db_user_to_proto
 
 
+
 class ContactServicer(mess_pb2_grpc.ContactServiceServicer):
     _STATUS_PROTO_TO_DB = {
         mess_pb2.ContactStatus.PENDING: DbContactStatus.pending,
@@ -269,6 +270,9 @@ class ContactServicer(mess_pb2_grpc.ContactServiceServicer):
             await session.commit()
             return Empty()
 
+    # app/grpcServ/app/services/contact.py
+# Найти метод ListContacts (примерно строка 180)
+
     async def ListContacts(self, request, context):
         current_user_id = await self._require_current_user_id(context)
         if current_user_id != request.user_id:
@@ -277,10 +281,18 @@ class ContactServicer(mess_pb2_grpc.ContactServiceServicer):
         page_size = max(1, min(request.page_size or 20, 100))
         offset = int(request.page_token or "0") if request.page_token else 0
         async with AsyncSessionLocal() as session:
-            stmt = select(Contact).where(
-                Contact.user_id == user_uuid,
-                Contact.status == DbContactStatus.accepted
-            ).order_by(Contact.updated_at.desc()).offset(offset).limit(page_size)
+            # ДОБАВЛЯЕМ selectinload для подгрузки связанного пользователя
+            stmt = (
+                select(Contact)
+                .options(selectinload(Contact.contact_user))   # <-- ЭТО КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
+                .where(
+                    Contact.user_id == user_uuid,
+                    Contact.status == DbContactStatus.accepted
+                )
+                .order_by(Contact.updated_at.desc())
+                .offset(offset)
+                .limit(page_size)
+            )
             contacts = (await session.execute(stmt)).scalars().all()
 
             next_offset = offset + len(contacts)

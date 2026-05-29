@@ -85,10 +85,10 @@ async def _validate_origin(websocket: WebSocket) -> bool:
 
 
 async def handle_redis_event(app, raw_data: str):
-    """Обработчик событий из Redis – рассылка online и сохранение в offline-очередь."""
     try:
         data = json.loads(raw_data)
         event_type = data.get("event")
+        logger.info(f"Received redis event: {event_type}")  # <-- добавить
         payload = data.get("payload", {})
         chat_id = payload.get("chat_id")
 

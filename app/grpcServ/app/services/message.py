@@ -119,12 +119,32 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                 updated_at=now,
             )
             session.add(msg)
-            await session.flush()
+            await session.flush()  # получить msg.message_id
 
+            # ---------- СОЗДАНИЕ СТАТУСОВ ДЛЯ ВСЕХ УЧАСТНИКОВ ----------
+            members_stmt = select(ChatMember.user_id).where(
+                ChatMember.chat_id == chat_uuid,
+                ChatMember.status == MemberStatus.active
+            )
+            member_ids = (await session.execute(members_stmt)).scalars().all()
+
+            for uid in member_ids:
+                if uid == sender_uuid:
+                    continue
+                status = MessageStatus(
+                    message_id=msg.message_id,
+                    user_id=uid,
+                    message_created_at=msg.created_at,
+                    delivered_at=None,
+                    read_at=None
+                )
+                session.add(status)
+            # ----------------------------------------------------------
+
+            # Обработка вложений
             for att in request.attachments:
                 if att.HasField("attachment_id"):
                     attachment_id = uuid.UUID(att.attachment_id)
-                    # Найти attachment и обновить его message_id и message_created_at
                     stmt = select(Attachment).where(Attachment.attachment_id == attachment_id)
                     attachment = (await session.execute(stmt)).scalar_one_or_none()
                     if attachment:
@@ -207,6 +227,24 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             )
             messages = (await session.execute(stmt)).scalars().all()
 
+            # ---------- ЗАГРУЗКА РЕАКЦИЙ ----------
+            reactions_by_msg = {}
+            if messages:
+                msg_ids = [m.message_id for m in messages]
+                reactions_stmt = select(Reaction).where(Reaction.message_id.in_(msg_ids))
+                reactions = (await session.execute(reactions_stmt)).scalars().all()
+                for r in reactions:
+                    reactions_by_msg.setdefault(r.message_id, []).append(r)
+
+            # Формируем protobuf ответ
+            pb_messages = []
+            for m in messages:
+                pb = self._message_to_proto(m)
+                for r in reactions_by_msg.get(m.message_id, []):
+                    pb.reactions.append(self._reaction_to_proto(r))
+                pb_messages.append(pb)
+            # ------------------------------------
+
             total_res = await session.execute(
                 select(func.count()).where(Message.chat_id == chat_uuid, Message.deleted_at.is_(None))
             )
@@ -214,11 +252,10 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
 
             next_token = str(offset + page_size) if offset + page_size < total else ""
             return mess_pb2.MessagesListResponse(
-                messages=[self._message_to_proto(m) for m in messages],
+                messages=pb_messages,
                 next_page_token=next_token,
                 total_count=total,
             )
-
     async def UpdateMessage(self, request, context):
         user_uuid = await self._require_current_user(context)
         chat_uuid = uuid.UUID(request.chat_id)
@@ -389,16 +426,19 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
         # Необязательный метод – можно оставить заглушку
         return mess_pb2.MessageStatusResponse()
 
+    # app/grpcServ/app/services/message.py
+
     async def MarkAsDelivered(self, request: mess_pb2.MarkAsDeliveredRequest, context) -> Empty:
         """
         Отмечает сообщение как доставленное для текущего пользователя.
+        Если статус отсутствует – создаёт его (доставлено, но не прочитано).
         Публикует событие status.update в Redis.
         """
         user_uuid = await require_current_user_uuid(context)
         chat_uuid = uuid.UUID(request.chat_id)
 
         async with AsyncSessionLocal() as session:
-            # Проверка членства в чате
+            # 1. Проверка членства в чате
             member = await session.execute(
                 select(ChatMember).where(
                     ChatMember.chat_id == chat_uuid,
@@ -409,46 +449,64 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             if not member.scalar_one_or_none():
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Not a member of this chat")
 
-            # Получаем статус сообщения
+            # 2. Найти сообщение (нужно для message_created_at)
+            msg_stmt = select(Message).where(
+                Message.message_id == request.message_id,
+                Message.chat_id == chat_uuid
+            )
+            message = (await session.execute(msg_stmt)).scalar_one_or_none()
+            if not message:
+                await context.abort(grpc.StatusCode.NOT_FOUND, "Message not found")
+
+            # 3. Поиск существующего статуса доставки/прочтения
             stmt = select(MessageStatus).where(
                 MessageStatus.message_id == request.message_id,
                 MessageStatus.user_id == user_uuid,
             )
             status = (await session.execute(stmt)).scalar_one_or_none()
+
+            now = datetime.now(timezone.utc)
+
             if not status:
-                await context.abort(grpc.StatusCode.NOT_FOUND, "Message status not found")
+                # Создаём новый статус – помечаем как доставленное, но не прочитанное
+                status = MessageStatus(
+                    message_id=request.message_id,
+                    user_id=user_uuid,
+                    message_created_at=message.created_at,
+                    delivered_at=now,
+                    read_at=None,               # не прочитано
+                )
+                session.add(status)
+            else:
+                # Если статус уже есть, обновляем delivered_at только если он ещё не установлен
+                if not status.delivered_at:
+                    status.delivered_at = now
 
-            # Если уже доставлено – ничего не делаем
-            if not status.delivered_at:
-                status.delivered_at = datetime.now(timezone.utc)
-                await session.commit()
+            await session.commit()
 
-                # Публикуем событие в Redis
-                event_data = {
-                    "event": "status.update",
-                    "payload": {
-                        "message_id": request.message_id,
-                        "chat_id": str(chat_uuid),
-                        "user_id": str(user_uuid),
-                        "delivered_at": status.delivered_at.isoformat(),
-                        "read_at": status.read_at.isoformat() if status.read_at else None,
-                    }
+            # 4. Публикация события в Redis для realtime-обновлений
+            event_data = {
+                "event": "status.update",
+                "payload": {
+                    "message_id": request.message_id,
+                    "chat_id": str(chat_uuid),
+                    "user_id": str(user_uuid),
+                    "delivered_at": status.delivered_at.isoformat() if status.delivered_at else None,
+                    "read_at": status.read_at.isoformat() if status.read_at else None,
                 }
-                await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
+            }
+            await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
 
         return Empty()
 
+    # app/grpcServ/app/services/message.py
+
     async def MarkAsRead(self, request: mess_pb2.MarkAsReadRequest, context) -> Empty:
-        """
-        Отмечает сообщение как прочитанное для текущего пользователя.
-        Если доставка не была отмечена ранее, устанавливает delivered_at = read_at.
-        Публикует событие status.update в Redis.
-        """
         user_uuid = await require_current_user_uuid(context)
         chat_uuid = uuid.UUID(request.chat_id)
 
         async with AsyncSessionLocal() as session:
-            # Проверка членства в чате
+            # Проверка членства
             member = await session.execute(
                 select(ChatMember).where(
                     ChatMember.chat_id == chat_uuid,
@@ -459,35 +517,55 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             if not member.scalar_one_or_none():
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Not a member of this chat")
 
-            # Получаем статус сообщения
+            # Пытаемся найти сообщение (нужно для message_created_at)
+            msg_stmt = select(Message).where(
+                Message.message_id == request.message_id,
+                Message.chat_id == chat_uuid
+            )
+            message = (await session.execute(msg_stmt)).scalar_one_or_none()
+            if not message:
+                await context.abort(grpc.StatusCode.NOT_FOUND, "Message not found")
+
+            # Ищем существующий статус
             stmt = select(MessageStatus).where(
                 MessageStatus.message_id == request.message_id,
                 MessageStatus.user_id == user_uuid,
             )
             status = (await session.execute(stmt)).scalar_one_or_none()
+
+            now = datetime.now(timezone.utc)
+
             if not status:
-                await context.abort(grpc.StatusCode.NOT_FOUND, "Message status not found")
-
-            # Если уже прочитано – ничего не делаем
-            if not status.read_at:
-                status.read_at = datetime.now(timezone.utc)
-                # Если доставка не была отмечена, ставим её тем же временем
+                # Создаём новый статус (помечаем как доставленное и прочитанное)
+                status = MessageStatus(
+                    message_id=request.message_id,
+                    user_id=user_uuid,
+                    message_created_at=message.created_at,
+                    delivered_at=now,
+                    read_at=now,
+                )
+                session.add(status)
+            else:
+                # Если статус существует, обновляем read_at (если ещё не было)
+                if not status.read_at:
+                    status.read_at = now
                 if not status.delivered_at:
-                    status.delivered_at = status.read_at
-                await session.commit()
+                    status.delivered_at = now
 
-                # Публикуем событие в Redis
-                event_data = {
-                    "event": "status.update",
-                    "payload": {
-                        "message_id": request.message_id,
-                        "chat_id": str(chat_uuid),
-                        "user_id": str(user_uuid),
-                        "delivered_at": status.delivered_at.isoformat(),
-                        "read_at": status.read_at.isoformat(),
-                    }
+            await session.commit()
+
+            # Публикуем событие в Redis (только если статус изменился)
+            event_data = {
+                "event": "status.update",
+                "payload": {
+                    "message_id": request.message_id,
+                    "chat_id": str(chat_uuid),
+                    "user_id": str(user_uuid),
+                    "delivered_at": status.delivered_at.isoformat() if status.delivered_at else None,
+                    "read_at": status.read_at.isoformat() if status.read_at else None,
                 }
-                await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
+            }
+            await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
 
         return Empty()
 
