@@ -1,3 +1,4 @@
+from collections import defaultdict
 import json
 import uuid
 import grpc
@@ -40,6 +41,20 @@ def _dt_to_ts(dt: datetime) -> Timestamp:
 
 
 class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
+    def _attachment_to_proto(self, attachment: Attachment) -> mess_pb2.Attachment:
+        pb = mess_pb2.Attachment(
+            attachment_id=str(attachment.attachment_id),
+            message_id=attachment.message_id or 0,
+            file_name=attachment.file_name,
+            file_size=attachment.file_size or 0,
+            mime_type=attachment.mime_type or "",
+            storage_path=attachment.storage_path,
+        )
+        if attachment.uploaded_at:
+            pb.uploaded_at.CopyFrom(_dt_to_ts(attachment.uploaded_at))
+        if attachment.message_created_at:
+            pb.message_created_at.CopyFrom(_dt_to_ts(attachment.message_created_at))
+        return pb
     async def _require_current_user(self, context) -> uuid.UUID:
         return await require_current_user_uuid(context)
 
@@ -236,6 +251,19 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             )
             messages = (await session.execute(stmt)).scalars().all()
 
+            # Загружаем attachments для всех сообщений
+            if messages:
+                msg_ids = [m.message_id for m in messages]
+                attachments_stmt = select(Attachment).where(Attachment.message_id.in_(msg_ids))
+                attachments_result = await session.execute(attachments_stmt)
+                attachments = attachments_result.scalars().all()
+                # Группируем по message_id
+                attachments_by_msg = defaultdict(list)
+                for att in attachments:
+                    attachments_by_msg[att.message_id].append(att)
+            else:
+                attachments_by_msg = {}
+
             # ---------- ЗАГРУЗКА РЕАКЦИЙ ----------
             reactions_by_msg = {}
             if messages:
@@ -249,6 +277,10 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             pb_messages = []
             for m in messages:
                 pb = self._message_to_proto(m)
+                # Добавляем attachments
+                for att in attachments_by_msg.get(m.message_id, []):
+                    pb.attachments.append(self._attachment_to_proto(att))
+                # Добавляем реакции (уже есть)
                 for r in reactions_by_msg.get(m.message_id, []):
                     pb.reactions.append(self._reaction_to_proto(r))
                 pb_messages.append(pb)
