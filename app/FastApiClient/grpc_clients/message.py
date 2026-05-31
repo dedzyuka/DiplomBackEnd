@@ -24,7 +24,7 @@ class MessageGrpcClient(BaseGrpcClient):
     sender_id: str,
     reply_to_id: Optional[int] = None,
     type: int = mess_pb2.TEXT,
-    attachments: Optional[List[dict]] = None,   # новый параметр
+    attachments: Optional[List[dict]] = None,
     mentions: Optional[List[str]] = None,
     access_token: Optional[str] = None,
 ) -> mess_pb2.Message:
@@ -37,7 +37,6 @@ class MessageGrpcClient(BaseGrpcClient):
         if reply_to_id is not None:
             req_kwargs["reply_to_id"] = reply_to_id
         if attachments:
-            # Преобразуем список dict в protobuf AttachmentInput
             for att in attachments:
                 att_input = req_kwargs.setdefault("attachments", []).append(
                     mess_pb2.AttachmentInput(attachment_id=att.get("attachment_id"))

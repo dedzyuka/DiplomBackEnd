@@ -95,7 +95,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
         chat_uuid = uuid.UUID(request.chat_id)
 
         async with AsyncSessionLocal() as session:
-            # Проверка членства отправителя
+            # Проверка членства
             res = await session.execute(
                 select(ChatMember).where(
                     ChatMember.chat_id == chat_uuid,
@@ -127,7 +127,6 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                 ChatMember.status == MemberStatus.active
             )
             member_ids = (await session.execute(members_stmt)).scalars().all()
-
             for uid in member_ids:
                 if uid == sender_uuid:
                     continue
@@ -141,16 +140,21 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                 session.add(status)
             # ----------------------------------------------------------
 
-            # Обработка вложений
+            # ---------- ОБРАБОТКА ВЛОЖЕНИЙ (КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ) ----------
             for att in request.attachments:
                 if att.HasField("attachment_id"):
                     attachment_id = uuid.UUID(att.attachment_id)
+                    print(f"🔍 Looking for attachment {attachment_id}")
                     stmt = select(Attachment).where(Attachment.attachment_id == attachment_id)
                     attachment = (await session.execute(stmt)).scalar_one_or_none()
                     if attachment:
+                        print(f"✅ Found attachment {attachment_id}, old message_id={attachment.message_id}")
                         attachment.message_id = msg.message_id
                         attachment.message_created_at = msg.created_at
                         session.add(attachment)
+                        print(f"🔄 Updated attachment {attachment_id} with message_id={msg.message_id}")
+                    else:
+                        print(f"❌ Attachment {attachment_id} not found in DB")
 
             await session.commit()
             await session.refresh(msg)
@@ -168,7 +172,12 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             }
             await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
 
-            return self._message_to_proto(msg)
+            # Загружаем статусы для ответа (опционально)
+            statuses_res = await session.execute(
+                select(MessageStatus).where(MessageStatus.message_id == msg.message_id)
+            )
+            statuses = statuses_res.scalars().all()
+            return self._message_to_proto(msg, statuses)
 
     async def GetMessage(self, request, context):
         user_uuid = await self._require_current_user(context)

@@ -49,7 +49,7 @@ class AttachmentServicer(mess_pb2_grpc.AttachmentServiceServicer):
         async with AsyncSessionLocal() as session:
             attachment = Attachment(
                 attachment_id=uuid.uuid4(),
-                message_id=0,  # временно, будет обновлено при привязке к сообщению
+                message_id=None,  # временно, будет обновлено при привязке к сообщению
                 message_created_at=datetime.now(timezone.utc),
                 file_name=metadata.file_name,
                 file_size=total_size,

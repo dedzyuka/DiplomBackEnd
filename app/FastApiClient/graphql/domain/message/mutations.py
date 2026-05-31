@@ -34,10 +34,11 @@ class MessageMutations:
         if reply_to_id is not None:
             grpc_request.reply_to_id = reply_to_id
 
+        attachments_list = []
         if attachment_id:
-            attachment_input = grpc_request.attachments.add()
-            attachment_input.attachment_id = attachment_id
-
+            att_input = mess_pb2.AttachmentInput()
+            att_input.attachment_id = attachment_id
+            attachments_list.append(att_input)
         grpc_msg = await anyio.to_thread.run_sync(
             lambda: info.context.message_client.send_message(
                 chat_id=chat_id,
