@@ -568,19 +568,25 @@ async def upload_file(
     current_user: User = Depends(get_current_user),
     token: str = Depends(oauth2_scheme),
 ):
-    contents = await file.read()
-    if len(contents) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File too large (max 5MB)")
-
-    client = AttachmentGrpcClient()
     try:
-        response = client.upload_attachment(
-            file_name=file.filename,
-            mime_type=file.content_type or "application/octet-stream",
-            file_data=contents,
-            access_token=token
-        )
+        contents = await file.read()
+        if len(contents) > 5 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="File too large (max 5MB)")
+
+        client = AttachmentGrpcClient()
+        try:
+            response = client.upload_attachment(
+                file_name=file.filename,
+                mime_type=file.content_type or "application/octet-stream",
+                file_data=contents,
+                access_token=token
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
     return {"attachment_id": response.attachment_id}
@@ -1789,10 +1795,11 @@ class MessageMutations:
         if reply_to_id is not None:
             grpc_request.reply_to_id = reply_to_id
 
+        attachments_list = []
         if attachment_id:
-            attachment_input = grpc_request.attachments.add()
-            attachment_input.attachment_id = attachment_id
-
+            att_input = mess_pb2.AttachmentInput()
+            att_input.attachment_id = attachment_id
+            attachments_list.append(att_input)
         grpc_msg = await anyio.to_thread.run_sync(
             lambda: info.context.message_client.send_message(
                 chat_id=chat_id,
@@ -2959,7 +2966,7 @@ class MessageGrpcClient(BaseGrpcClient):
     sender_id: str,
     reply_to_id: Optional[int] = None,
     type: int = mess_pb2.TEXT,
-    attachments: Optional[List[dict]] = None,   # новый параметр
+    attachments: Optional[List[dict]] = None,
     mentions: Optional[List[str]] = None,
     access_token: Optional[str] = None,
 ) -> mess_pb2.Message:
@@ -2972,7 +2979,6 @@ class MessageGrpcClient(BaseGrpcClient):
         if reply_to_id is not None:
             req_kwargs["reply_to_id"] = reply_to_id
         if attachments:
-            # Преобразуем список dict в protobuf AttachmentInput
             for att in attachments:
                 att_input = req_kwargs.setdefault("attachments", []).append(
                     mess_pb2.AttachmentInput(attachment_id=att.get("attachment_id"))
@@ -9973,7 +9979,7 @@ class AttachmentServicer(mess_pb2_grpc.AttachmentServiceServicer):
         async with AsyncSessionLocal() as session:
             attachment = Attachment(
                 attachment_id=uuid.uuid4(),
-                message_id=0,  # временно, будет обновлено при привязке к сообщению
+                message_id=None,  # временно, будет обновлено при привязке к сообщению
                 message_created_at=datetime.now(timezone.utc),
                 file_name=metadata.file_name,
                 file_size=total_size,
@@ -12021,6 +12027,7 @@ class PrivacyLevel(str, Enum):
     nobody = "nobody"
 
 ===== app/grpcServ/app/services/message.py =====
+from collections import defaultdict
 import json
 import uuid
 import grpc
@@ -12063,6 +12070,20 @@ def _dt_to_ts(dt: datetime) -> Timestamp:
 
 
 class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
+    def _attachment_to_proto(self, attachment: Attachment) -> mess_pb2.Attachment:
+        pb = mess_pb2.Attachment(
+            attachment_id=str(attachment.attachment_id),
+            message_id=attachment.message_id or 0,
+            file_name=attachment.file_name,
+            file_size=attachment.file_size or 0,
+            mime_type=attachment.mime_type or "",
+            storage_path=attachment.storage_path,
+        )
+        if attachment.uploaded_at:
+            pb.uploaded_at.CopyFrom(_dt_to_ts(attachment.uploaded_at))
+        if attachment.message_created_at:
+            pb.message_created_at.CopyFrom(_dt_to_ts(attachment.message_created_at))
+        return pb
     async def _require_current_user(self, context) -> uuid.UUID:
         return await require_current_user_uuid(context)
 
@@ -12118,7 +12139,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
         chat_uuid = uuid.UUID(request.chat_id)
 
         async with AsyncSessionLocal() as session:
-            # Проверка членства отправителя
+            # Проверка членства
             res = await session.execute(
                 select(ChatMember).where(
                     ChatMember.chat_id == chat_uuid,
@@ -12150,7 +12171,6 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                 ChatMember.status == MemberStatus.active
             )
             member_ids = (await session.execute(members_stmt)).scalars().all()
-
             for uid in member_ids:
                 if uid == sender_uuid:
                     continue
@@ -12164,34 +12184,57 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                 session.add(status)
             # ----------------------------------------------------------
 
-            # Обработка вложений
+            # ---------- ОБРАБОТКА ВЛОЖЕНИЙ (КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ) ----------
             for att in request.attachments:
                 if att.HasField("attachment_id"):
                     attachment_id = uuid.UUID(att.attachment_id)
+                    print(f"🔍 Looking for attachment {attachment_id}")
                     stmt = select(Attachment).where(Attachment.attachment_id == attachment_id)
                     attachment = (await session.execute(stmt)).scalar_one_or_none()
                     if attachment:
+                        print(f"✅ Found attachment {attachment_id}, old message_id={attachment.message_id}")
                         attachment.message_id = msg.message_id
                         attachment.message_created_at = msg.created_at
                         session.add(attachment)
+                        print(f"🔄 Updated attachment {attachment_id} with message_id={msg.message_id}")
+                    else:
+                        print(f"❌ Attachment {attachment_id} not found in DB")
 
             await session.commit()
             await session.refresh(msg)
 
             # Публикация события в Redis
+            attachments_stmt = select(Attachment).where(Attachment.message_id == msg.message_id)
+            attachments = (await session.execute(attachments_stmt)).scalars().all()
+            attachments_list = []
+            for att in attachments:
+                attachments_list.append({
+                    "attachment_id": str(att.attachment_id),
+                    "file_name": att.file_name,
+                    "file_size": att.file_size,
+                    "mime_type": att.mime_type,
+                    "storage_path": att.storage_path,
+                })
+
             event_data = {
                 "event": "message.new",
                 "payload": {
                     "message_id": msg.message_id,
                     "chat_id": str(msg.chat_id),
                     "sender_id": str(msg.sender_id),
-                    "content": msg.content,
+                    "content": msg.content or "",
                     "created_at": msg.created_at.isoformat(),
+                    "attachments": attachments_list   # ключевое добавление
                 }
             }
             await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
 
-            return self._message_to_proto(msg)
+            # Загружаем статусы для ответа (опционально)
+            statuses_res = await session.execute(
+                select(MessageStatus).where(MessageStatus.message_id == msg.message_id)
+            )
+            statuses = statuses_res.scalars().all()
+            return self._message_to_proto(msg, statuses)
 
     async def GetMessage(self, request, context):
         user_uuid = await self._require_current_user(context)
@@ -12250,6 +12293,19 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             )
             messages = (await session.execute(stmt)).scalars().all()
 
+            # Загружаем attachments для всех сообщений
+            if messages:
+                msg_ids = [m.message_id for m in messages]
+                attachments_stmt = select(Attachment).where(Attachment.message_id.in_(msg_ids))
+                attachments_result = await session.execute(attachments_stmt)
+                attachments = attachments_result.scalars().all()
+                # Группируем по message_id
+                attachments_by_msg = defaultdict(list)
+                for att in attachments:
+                    attachments_by_msg[att.message_id].append(att)
+            else:
+                attachments_by_msg = {}
+
             # ---------- ЗАГРУЗКА РЕАКЦИЙ ----------
             reactions_by_msg = {}
             if messages:
@@ -12263,6 +12319,10 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             pb_messages = []
             for m in messages:
                 pb = self._message_to_proto(m)
+                # Добавляем attachments
+                for att in attachments_by_msg.get(m.message_id, []):
+                    pb.attachments.append(self._attachment_to_proto(att))
+                # Добавляем реакции (уже есть)
                 for r in reactions_by_msg.get(m.message_id, []):
                     pb.reactions.append(self._reaction_to_proto(r))
                 pb_messages.append(pb)

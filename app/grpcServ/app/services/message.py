@@ -175,14 +175,27 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             await session.refresh(msg)
 
             # Публикация события в Redis
+            attachments_stmt = select(Attachment).where(Attachment.message_id == msg.message_id)
+            attachments = (await session.execute(attachments_stmt)).scalars().all()
+            attachments_list = []
+            for att in attachments:
+                attachments_list.append({
+                    "attachment_id": str(att.attachment_id),
+                    "file_name": att.file_name,
+                    "file_size": att.file_size,
+                    "mime_type": att.mime_type,
+                    "storage_path": att.storage_path,
+                })
+
             event_data = {
                 "event": "message.new",
                 "payload": {
                     "message_id": msg.message_id,
                     "chat_id": str(msg.chat_id),
                     "sender_id": str(msg.sender_id),
-                    "content": msg.content,
+                    "content": msg.content or "",
                     "created_at": msg.created_at.isoformat(),
+                    "attachments": attachments_list   # ключевое добавление
                 }
             }
             await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
@@ -558,7 +571,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             if not member.scalar_one_or_none():
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Not a member of this chat")
 
-            # Пытаемся найти сообщение (нужно для message_created_at)
+            # Найти сообщение
             msg_stmt = select(Message).where(
                 Message.message_id == request.message_id,
                 Message.chat_id == chat_uuid
@@ -567,17 +580,15 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             if not message:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Message not found")
 
-            # Ищем существующий статус
+            # Найти или создать статус
             stmt = select(MessageStatus).where(
                 MessageStatus.message_id == request.message_id,
                 MessageStatus.user_id == user_uuid,
             )
             status = (await session.execute(stmt)).scalar_one_or_none()
-
             now = datetime.now(timezone.utc)
 
             if not status:
-                # Создаём новый статус (помечаем как доставленное и прочитанное)
                 status = MessageStatus(
                     message_id=request.message_id,
                     user_id=user_uuid,
@@ -587,7 +598,6 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                 )
                 session.add(status)
             else:
-                # Если статус существует, обновляем read_at (если ещё не было)
                 if not status.read_at:
                     status.read_at = now
                 if not status.delivered_at:
@@ -595,7 +605,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
 
             await session.commit()
 
-            # Публикуем событие в Redis (только если статус изменился)
+            # Публикуем событие в Redis
             event_data = {
                 "event": "status.update",
                 "payload": {
