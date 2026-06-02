@@ -63,8 +63,7 @@ class AttachmentServicer(mess_pb2_grpc.AttachmentServiceServicer):
 
         return mess_pb2.UploadAttachmentResponse(
             attachment_id=str(attachment.attachment_id),
-            storage_path=object_name
-        )
+            storage_path=object_name)       
 
     async def GetAttachment(self, request, context):
         user_id = await require_current_user_uuid(context)  # авторизация
