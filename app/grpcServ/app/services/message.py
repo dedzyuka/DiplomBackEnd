@@ -134,9 +134,9 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                 updated_at=now,
             )
             session.add(msg)
-            await session.flush()  # получить msg.message_id
+            await session.flush()
 
-            # ---------- СОЗДАНИЕ СТАТУСОВ ДЛЯ ВСЕХ УЧАСТНИКОВ ----------
+            # Статусы для всех участников
             members_stmt = select(ChatMember.user_id).where(
                 ChatMember.chat_id == chat_uuid,
                 ChatMember.status == MemberStatus.active
@@ -149,44 +149,55 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                     message_id=msg.message_id,
                     user_id=uid,
                     message_created_at=msg.created_at,
-                    delivered_at=None,
-                    read_at=None
                 )
                 session.add(status)
-            # ----------------------------------------------------------
 
-            # ---------- ОБРАБОТКА ВЛОЖЕНИЙ (КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ) ----------
+            # Привязка вложений
             for att in request.attachments:
                 if att.HasField("attachment_id"):
                     attachment_id = uuid.UUID(att.attachment_id)
-                    print(f"🔍 Looking for attachment {attachment_id}")
                     stmt = select(Attachment).where(Attachment.attachment_id == attachment_id)
                     attachment = (await session.execute(stmt)).scalar_one_or_none()
                     if attachment:
-                        print(f"✅ Found attachment {attachment_id}, old message_id={attachment.message_id}")
                         attachment.message_id = msg.message_id
                         attachment.message_created_at = msg.created_at
                         session.add(attachment)
-                        print(f"🔄 Updated attachment {attachment_id} with message_id={msg.message_id}")
-                    else:
-                        print(f"❌ Attachment {attachment_id} not found in DB")
 
             await session.commit()
             await session.refresh(msg)
 
-            # Публикация события в Redis
+            # Загружаем статусы для ответа
+            statuses_res = await session.execute(
+                select(MessageStatus).where(MessageStatus.message_id == msg.message_id)
+            )
+            statuses = statuses_res.scalars().all()
+
+            # Создаём protobuf сообщение
+            pb = self._message_to_proto(msg, statuses)
+
+            # Загружаем и добавляем вложения
             attachments_stmt = select(Attachment).where(Attachment.message_id == msg.message_id)
             attachments = (await session.execute(attachments_stmt)).scalars().all()
-            attachments_list = []
             for att in attachments:
-                attachments_list.append({
+                pb.attachments.append(self._attachment_to_proto(att))
+
+            # Загружаем и добавляем реакции (если нужны)
+            reactions_stmt = select(Reaction).where(Reaction.message_id == msg.message_id)
+            reactions = (await session.execute(reactions_stmt)).scalars().all()
+            for r in reactions:
+                pb.reactions.append(self._reaction_to_proto(r))
+
+            # Публикация в Redis (не меняем)
+            attachments_list = [
+                {
                     "attachment_id": str(att.attachment_id),
                     "file_name": att.file_name,
                     "file_size": att.file_size,
                     "mime_type": att.mime_type,
                     "storage_path": att.storage_path,
-                })
-
+                }
+                for att in attachments
+            ]
             event_data = {
                 "event": "message.new",
                 "payload": {
@@ -195,17 +206,12 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                     "sender_id": str(msg.sender_id),
                     "content": msg.content or "",
                     "created_at": msg.created_at.isoformat(),
-                    "attachments": attachments_list   # ключевое добавление
+                    "attachments": attachments_list,
                 }
             }
             await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
 
-            # Загружаем статусы для ответа (опционально)
-            statuses_res = await session.execute(
-                select(MessageStatus).where(MessageStatus.message_id == msg.message_id)
-            )
-            statuses = statuses_res.scalars().all()
-            return self._message_to_proto(msg, statuses)
+            return pb
 
     async def GetMessage(self, request, context):
         user_uuid = await self._require_current_user(context)
@@ -231,7 +237,22 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                 select(MessageStatus).where(MessageStatus.message_id == msg.message_id)
             )
             statuses = statuses_res.scalars().all()
-            return self._message_to_proto(msg, statuses)
+
+            pb = self._message_to_proto(msg, statuses)
+
+            # Добавляем вложения
+            attachments_stmt = select(Attachment).where(Attachment.message_id == msg.message_id)
+            attachments = (await session.execute(attachments_stmt)).scalars().all()
+            for att in attachments:
+                pb.attachments.append(self._attachment_to_proto(att))
+
+            # Добавляем реакции
+            reactions_stmt = select(Reaction).where(Reaction.message_id == msg.message_id)
+            reactions = (await session.execute(reactions_stmt)).scalars().all()
+            for r in reactions:
+                pb.reactions.append(self._reaction_to_proto(r))
+
+            return pb
 
     async def ListMessages(self, request, context):
         user_uuid = await self._require_current_user(context)
