@@ -165,6 +165,8 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
             update_data["phone"] = request.phone.strip()
         if request.avatar_url:
             update_data["avatar_url"] = request.avatar_url.strip()
+        if request.avatar_url:
+            update_data["avatar_url"] = request.avatar_url.lower()
         if request.bio:
             update_data["bio"] = request.bio.strip()
 

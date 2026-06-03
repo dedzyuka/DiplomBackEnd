@@ -1405,9 +1405,25 @@ import strawberry
 from typing import List
 
 from FastApiClient.graphql.context import GraphQLContext
-from FastApiClient.utils.converter import from_grpc_chat, from_grpc_user
+from .types import MessagePreview as GQLMessagePreview
+from FastApiClient.utils.converter import from_grpc_chat, _ts_to_iso, from_grpc_user
 from FastApiClient.graphql.domain.user.types import User
 from .types import Chat
+
+
+def _to_message_preview(grpc_preview):
+    """Конвертирует protobuf MessagePreview в GraphQL MessagePreview (один аргумент)."""
+    if not grpc_preview:
+        return None
+
+    return GQLMessagePreview(
+        message_id=grpc_preview.message_id,
+        sender_id=grpc_preview.sender_id,
+        sender_nickname=None,  # можно позже подгрузить через дополнительный запрос
+        text_preview=grpc_preview.text_preview if grpc_preview.HasField("text_preview") else None,
+        created_at=_ts_to_iso(grpc_preview.created_at),
+        type=str(grpc_preview.type),
+    )
 
 
 @strawberry.type
@@ -1424,7 +1440,10 @@ class ChatQueries:
                 current_user_id=current_user_id,
             )
         )
-        return from_grpc_chat(grpc_chat)
+        gql_chat = from_grpc_chat(grpc_chat)
+        if grpc_chat.HasField("last_message_preview"):
+            gql_chat.last_message_preview = _to_message_preview(grpc_chat.last_message_preview)
+        return gql_chat
 
     @strawberry.field
     async def list(
@@ -1445,7 +1464,13 @@ class ChatQueries:
                 current_user_id=current_user_id,
             )
         )
-        return [from_grpc_chat(chat) for chat in grpc_resp.chats]
+        chats = []
+        for grpc_chat in grpc_resp.chats:
+            gql_chat = from_grpc_chat(grpc_chat)
+            if grpc_chat.HasField("last_message_preview"):
+                gql_chat.last_message_preview = _to_message_preview(grpc_chat.last_message_preview)
+            chats.append(gql_chat)
+        return chats
 
     @strawberry.field
     async def members(
@@ -1454,7 +1479,7 @@ class ChatQueries:
         info: strawberry.Info[GraphQLContext],
         page: int = 1,
         page_size: int = 50,
-    ) -> List[User]:   # изменён тип возврата
+    ) -> List[User]:
         access_token = info.context.require_access_token()
         current_user_id = info.context.require_user_id()
 
@@ -1467,10 +1492,8 @@ class ChatQueries:
                 current_user_id=current_user_id,
             )
         )
-        # grpc_resp.members – список объектов ChatMember, у каждого есть user_id
         users = []
         for member in grpc_resp.members:
-            # Получаем пользователя через user_client
             grpc_user = await anyio.to_thread.run_sync(
                 lambda: info.context.user_client.get_user(member.user_id)
             )
@@ -1482,8 +1505,17 @@ class ChatQueries:
 
 ===== app/FastApiClient/graphql/domain/chat/types.py =====
 
+from typing import Optional
 import strawberry
 
+@strawberry.type
+class MessagePreview:
+    message_id: int
+    sender_id: str
+    sender_nickname: str | None = None
+    text_preview: str | None
+    created_at: str
+    type: str
 
 @strawberry.type
 class Chat:
@@ -1498,6 +1530,9 @@ class Chat:
     created_at: str
     last_message: str | None = None
     members_count: int = 0
+    last_message_preview: Optional[MessagePreview] = None  
+
+
 
 ===== app/FastApiClient/graphql/domain/contact/mutations.py =====
 import strawberry
@@ -1997,7 +2032,6 @@ class MessageQueries:
 import strawberry
 from typing import Optional, List
 
-
 @strawberry.type
 class Attachment:
     attachment_id: str
@@ -2007,7 +2041,6 @@ class Attachment:
     storage_path: str
     uploaded_at: str
 
-
 @strawberry.type
 class Reaction:
     message_id: int
@@ -2015,13 +2048,20 @@ class Reaction:
     emoji: str
     created_at: str
 
-
 @strawberry.type
 class MessageStatusInfo:
     user_id: str
     delivered_at: Optional[str] = None
     read_at: Optional[str] = None
 
+@strawberry.type
+class MessagePreview:
+    message_id: int
+    sender_id: str
+    sender_nickname: Optional[str] = None
+    text_preview: Optional[str] = None
+    created_at: str
+    type: str
 
 @strawberry.type
 class Message:
@@ -2038,8 +2078,8 @@ class Message:
     attachments: List[Attachment] = strawberry.field(default_factory=list)
     reactions: List[Reaction] = strawberry.field(default_factory=list)
     statuses: List[MessageStatusInfo] = strawberry.field(default_factory=list)
-    delivered_at: Optional[str] = None      # <-- добавить
-    read_at: Optional[str] = None           # <-- добавить
+    delivered_at: Optional[str] = None
+    read_at: Optional[str] = None
 
 ===== app/FastApiClient/graphql/domain/message/utils/converter.py =====
 from FastApiClient.protos.protobuf import mess_pb2
@@ -3386,14 +3426,14 @@ class Chat(Base):
     )
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)
     max_members: Mapped[int] = mapped_column(Integer, default=200)
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), server_default=text("now()")
-    )
+
 
     # Relationships
     creator = relationship("User", back_populates="owned_chats")
     members = relationship("ChatMember", back_populates="chat")
     messages = relationship("Message", back_populates="chat")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"), onupdate=text("now()"))
 
 
 # ---------- Chat Members ----------
@@ -6822,6 +6862,8 @@ def from_grpc_chat(grpc_chat) -> GraphQLChat:
         max_members=int(grpc_chat.max_members),
         created_at=created_iso,
         members_count=int(getattr(grpc_chat, "members_count", 0)),
+        last_message=None,
+        last_message_preview=None,   # <--- ДОБАВИТЬ
     )
 
 
@@ -10468,17 +10510,19 @@ class AuthServicer(mess_pb2_grpc.AuthServiceServicer):
         return info
 
 ===== app/grpcServ/app/services/chat.py =====
-from google.protobuf.empty_pb2 import Empty
+from typing import Optional
 import uuid
 import datetime
 import grpc
+from google.protobuf.empty_pb2 import Empty
 from google.protobuf.timestamp_pb2 import Timestamp
-from sqlalchemy import select, func, update, delete
+from sqlalchemy import delete, select, func, update, desc
+from sqlalchemy.orm import selectinload
 
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
 from services.access_session import require_current_user_uuid
-from services.models import Chat, User, ChatMember
+from services.models import Chat, User, ChatMember, Message, Attachment
 from services.enums import (
     ChatType as DbChatType,
     MemberRole as DbMemberRole,
@@ -10511,6 +10555,19 @@ PROTO_STATUS_TO_DB = {
     mess_pb2.LEFT: DbMemberStatus.left,
     mess_pb2.BANNED: DbMemberStatus.banned,
 }
+# В начале файла после импортов
+DB_MESSAGE_TYPE_TO_PROTO = {
+    "text": mess_pb2.TEXT,
+    "image": mess_pb2.IMAGE,
+    "video": mess_pb2.VIDEO,
+    "audio": mess_pb2.AUDIO,
+    "file": mess_pb2.FILE,
+    "voice": mess_pb2.VOICE,
+    "sticker": mess_pb2.STICKER,
+    "location": mess_pb2.LOCATION,
+    "contact": mess_pb2.CONTACT,
+    "system": mess_pb2.SYSTEM,
+}
 
 
 class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
@@ -10541,7 +10598,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             DbChatType.channel: mess_pb2.CHANNEL,
         }[chat_type]
 
-    async def _build_chat_proto(self, session, chat: Chat) -> mess_pb2.Chat:
+    async def _build_chat_proto(self, session, chat: Chat, current_user_id: Optional[uuid.UUID] = None) -> mess_pb2.Chat:
         members_count = (
             await session.execute(
                 select(func.count()).select_from(ChatMember).where(
@@ -10558,8 +10615,8 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             max_members=int(chat.max_members),
             created_at=_dt_to_ts(chat.created_at),
             members_count=int(members_count),
-            updated_at=_dt_to_ts(chat.created_at),
-            last_activity_at=_dt_to_ts(chat.created_at),
+            updated_at=_dt_to_ts(chat.updated_at or chat.created_at),
+            last_activity_at=_dt_to_ts(chat.updated_at or chat.created_at),
             visibility=mess_pb2.VISIBILITY_PUBLIC if chat.is_public else mess_pb2.VISIBILITY_PRIVATE,
             join_policy=mess_pb2.JOIN_OPEN if chat.is_public else mess_pb2.JOIN_INVITE_ONLY,
         )
@@ -10571,8 +10628,67 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             resp.avatar_url = chat.avatar_url
         if chat.creator_id is not None:
             resp.creator_id = str(chat.creator_id)
-        return resp
 
+        # Добавляем preview последнего сообщения (если есть)
+        if current_user_id:
+            preview = await self._get_last_message_preview(session, chat.chat_id)
+            if preview:
+                resp.last_message_preview.CopyFrom(preview)
+
+        return resp
+    
+    async def _get_last_message_preview(self, session, chat_id: uuid.UUID) -> Optional[mess_pb2.MessagePreview]:
+        """Возвращает MessagePreview для последнего не удалённого сообщения в чате."""
+        print(f"🔍 Getting last message preview for chat {chat_id}")
+        stmt = (
+            select(Message)
+            .where(Message.chat_id == chat_id, Message.deleted_at.is_(None))
+            .order_by(desc(Message.created_at))
+            .limit(1)
+        )
+        last_msg = (await session.execute(stmt)).scalar_one_or_none()
+        if not last_msg:
+            return None
+
+        # Текстовое превью
+        text_preview = None
+        if last_msg.content and last_msg.content.strip():
+            text_preview = last_msg.content
+        else:
+            # Если есть вложения
+            att_stmt = select(Attachment).where(Attachment.message_id == last_msg.message_id)
+            attachments = (await session.execute(att_stmt)).scalars().all()
+            if attachments:
+                first = attachments[0]
+                if first.mime_type:
+                    if first.mime_type.startswith('image/'):
+                        text_preview = "📷 Изображение"
+                    elif first.mime_type.startswith('video/'):
+                        text_preview = "🎥 Видео"
+                    elif first.mime_type.startswith('audio/'):
+                        text_preview = "🎵 Аудио"
+                    else:
+                        text_preview = "📎 Файл"
+                else:
+                    text_preview = "Вложение"
+            else:
+                text_preview = ""
+
+
+        msg_type_enum = DB_MESSAGE_TYPE_TO_PROTO.get(last_msg.type, mess_pb2.TEXT)
+
+        preview = mess_pb2.MessagePreview(
+            message_id=last_msg.message_id,
+            sender_id=str(last_msg.sender_id),
+            type=msg_type_enum,
+            created_at=_dt_to_ts(last_msg.created_at),
+            is_deleted=False,
+        )
+        if text_preview:
+            preview.text_preview = text_preview
+        print(f"✅ Preview created: {preview}")
+        return preview
+    
     async def _build_member_proto(self, session, member: ChatMember) -> mess_pb2.ChatMember:
         resp = mess_pb2.ChatMember(
             chat_id=str(member.chat_id),
@@ -10972,13 +11088,15 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                         ChatMember.user_id == current_user_uuid,
                         ChatMember.status == DbMemberStatus.active,
                     )
-                    .order_by(Chat.created_at.desc())
+                    .order_by(Chat.updated_at.desc(), Chat.created_at.desc())
                     .offset(offset)
                     .limit(page_size)
                 )
             ).scalars().all()
 
-            chats = [await self._build_chat_proto(session, c) for c in rows]
+            # Передаём current_user_uuid в _build_chat_proto
+            chats = [await self._build_chat_proto(session, c, current_user_uuid) for c in rows]
+
             next_page = str(offset + page_size) if offset + page_size < total else ""
             return mess_pb2.ChatsListResponse(
                 chats=chats,
@@ -11218,7 +11336,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
     async def ListChatsV2(
         self, request: mess_pb2.ListChatsRequestV2, context
     ) -> mess_pb2.ChatsListResponseV2:
-        legacy = await self.ListChats(
+        legacy_response = await self.ListChats(
             mess_pb2.ListChatsRequest(
                 user_id=request.user_id,
                 page_size=request.page_size,
@@ -11226,24 +11344,24 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             ),
             context,
         )
-
         chats = []
-        for c in legacy.chats:
-            title = c.name if c.HasField("name") else f"Chat {c.chat_id[:8]}"
+        for c in legacy_response.chats:
             summary = mess_pb2.ChatSummary(
                 chat_id=c.chat_id,
                 chat_type=c.chat_type,
-                title=title,
-                visibility=mess_pb2.VISIBILITY_PUBLIC if c.is_public else mess_pb2.VISIBILITY_PRIVATE,
-                join_policy=mess_pb2.JOIN_OPEN if c.is_public else mess_pb2.JOIN_INVITE_ONLY,
+                title=c.name if c.HasField("name") else f"Chat {c.chat_id[:8]}",
+                visibility=c.visibility,
+                join_policy=c.join_policy,
                 members_count=c.members_count,
-                last_activity_at=c.created_at,
+                last_activity_at=c.last_activity_at,
                 my_role=mess_pb2.MEMBER,
                 is_muted=False,
                 is_archived=False,
             )
             if c.HasField("avatar_url"):
                 summary.avatar_url = c.avatar_url
+            if request.include_last_message and c.HasField("last_message_preview"):
+                summary.last_message.CopyFrom(c.last_message_preview)
             if request.include_counters:
                 summary.counters.unread_count = 0
                 summary.counters.has_mentions = False
@@ -11251,8 +11369,8 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
 
         return mess_pb2.ChatsListResponseV2(
             chats=chats,
-            next_page_token=legacy.next_page_token,
-            total_count=legacy.total_count,
+            next_page_token=legacy_response.next_page_token,
+            total_count=legacy_response.total_count,
         )
 
     async def BatchGetChats(
@@ -12032,13 +12150,13 @@ import uuid
 import grpc
 from datetime import datetime, timezone
 from google.protobuf.empty_pb2 import Empty
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
 from services.access_session import require_current_user_uuid
 from services.enums import MemberRole, MemberStatus
-from services.models import Attachment, ChatMember, Message, MessageStatus, Reaction
+from services.models import Attachment, Chat, ChatMember, Message, MessageStatus, Reaction
 from services.redis_client import redis_client
 from core.config import settings
 from google.protobuf.timestamp_pb2 import Timestamp
@@ -12162,9 +12280,9 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                 updated_at=now,
             )
             session.add(msg)
-            await session.flush()  # получить msg.message_id
+            await session.flush()
 
-            # ---------- СОЗДАНИЕ СТАТУСОВ ДЛЯ ВСЕХ УЧАСТНИКОВ ----------
+            # Статусы для всех участников
             members_stmt = select(ChatMember.user_id).where(
                 ChatMember.chat_id == chat_uuid,
                 ChatMember.status == MemberStatus.active
@@ -12177,44 +12295,64 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                     message_id=msg.message_id,
                     user_id=uid,
                     message_created_at=msg.created_at,
-                    delivered_at=None,
-                    read_at=None
                 )
                 session.add(status)
-            # ----------------------------------------------------------
 
-            # ---------- ОБРАБОТКА ВЛОЖЕНИЙ (КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ) ----------
+            # Привязка вложений
             for att in request.attachments:
                 if att.HasField("attachment_id"):
                     attachment_id = uuid.UUID(att.attachment_id)
-                    print(f"🔍 Looking for attachment {attachment_id}")
                     stmt = select(Attachment).where(Attachment.attachment_id == attachment_id)
                     attachment = (await session.execute(stmt)).scalar_one_or_none()
                     if attachment:
-                        print(f"✅ Found attachment {attachment_id}, old message_id={attachment.message_id}")
                         attachment.message_id = msg.message_id
                         attachment.message_created_at = msg.created_at
                         session.add(attachment)
-                        print(f"🔄 Updated attachment {attachment_id} with message_id={msg.message_id}")
-                    else:
-                        print(f"❌ Attachment {attachment_id} not found in DB")
 
             await session.commit()
+
+            # Обновляем updated_at чата (последняя активность)
+            await session.execute(
+                update(Chat)
+                .where(Chat.chat_id == chat_uuid)
+                .values(updated_at=datetime.now(timezone.utc))
+            )
+            await session.commit()
+
             await session.refresh(msg)
 
-            # Публикация события в Redis
+            # Загружаем статусы для ответа
+            statuses_res = await session.execute(
+                select(MessageStatus).where(MessageStatus.message_id == msg.message_id)
+            )
+            statuses = statuses_res.scalars().all()
+
+            # Создаём protobuf сообщение
+            pb = self._message_to_proto(msg, statuses)
+
+            # Загружаем и добавляем вложения
             attachments_stmt = select(Attachment).where(Attachment.message_id == msg.message_id)
             attachments = (await session.execute(attachments_stmt)).scalars().all()
-            attachments_list = []
             for att in attachments:
-                attachments_list.append({
+                pb.attachments.append(self._attachment_to_proto(att))
+
+            # Загружаем и добавляем реакции
+            reactions_stmt = select(Reaction).where(Reaction.message_id == msg.message_id)
+            reactions = (await session.execute(reactions_stmt)).scalars().all()
+            for r in reactions:
+                pb.reactions.append(self._reaction_to_proto(r))
+
+            # Публикация в Redis
+            attachments_list = [
+                {
                     "attachment_id": str(att.attachment_id),
                     "file_name": att.file_name,
                     "file_size": att.file_size,
                     "mime_type": att.mime_type,
                     "storage_path": att.storage_path,
-                })
-
+                }
+                for att in attachments
+            ]
             event_data = {
                 "event": "message.new",
                 "payload": {
@@ -12223,17 +12361,12 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                     "sender_id": str(msg.sender_id),
                     "content": msg.content or "",
                     "created_at": msg.created_at.isoformat(),
-                    "attachments": attachments_list   # ключевое добавление
+                    "attachments": attachments_list,
                 }
             }
             await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
 
-            # Загружаем статусы для ответа (опционально)
-            statuses_res = await session.execute(
-                select(MessageStatus).where(MessageStatus.message_id == msg.message_id)
-            )
-            statuses = statuses_res.scalars().all()
-            return self._message_to_proto(msg, statuses)
+            return pb
 
     async def GetMessage(self, request, context):
         user_uuid = await self._require_current_user(context)
@@ -12259,7 +12392,22 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                 select(MessageStatus).where(MessageStatus.message_id == msg.message_id)
             )
             statuses = statuses_res.scalars().all()
-            return self._message_to_proto(msg, statuses)
+
+            pb = self._message_to_proto(msg, statuses)
+
+            # Добавляем вложения
+            attachments_stmt = select(Attachment).where(Attachment.message_id == msg.message_id)
+            attachments = (await session.execute(attachments_stmt)).scalars().all()
+            for att in attachments:
+                pb.attachments.append(self._attachment_to_proto(att))
+
+            # Добавляем реакции
+            reactions_stmt = select(Reaction).where(Reaction.message_id == msg.message_id)
+            reactions = (await session.execute(reactions_stmt)).scalars().all()
+            for r in reactions:
+                pb.reactions.append(self._reaction_to_proto(r))
+
+            return pb
 
     async def ListMessages(self, request, context):
         user_uuid = await self._require_current_user(context)
@@ -12355,8 +12503,38 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             msg.is_edited = True
 
             await session.commit()
+
+            # Обновляем updated_at чата (последняя активность)
+            await session.execute(
+                update(Chat)
+                .where(Chat.chat_id == chat_uuid)
+                .values(updated_at=datetime.now(timezone.utc))
+            )
+            await session.commit()
+
             await session.refresh(msg)
 
+            # Загружаем статусы для ответа
+            statuses_res = await session.execute(
+                select(MessageStatus).where(MessageStatus.message_id == msg.message_id)
+            )
+            statuses = statuses_res.scalars().all()
+
+            pb = self._message_to_proto(msg, statuses)
+
+            # Добавляем вложения
+            attachments_stmt = select(Attachment).where(Attachment.message_id == msg.message_id)
+            attachments = (await session.execute(attachments_stmt)).scalars().all()
+            for att in attachments:
+                pb.attachments.append(self._attachment_to_proto(att))
+
+            # Добавляем реакции
+            reactions_stmt = select(Reaction).where(Reaction.message_id == msg.message_id)
+            reactions = (await session.execute(reactions_stmt)).scalars().all()
+            for r in reactions:
+                pb.reactions.append(self._reaction_to_proto(r))
+
+            # Публикуем событие обновления
             event_data = {
                 "event": "message.update",
                 "payload": {
@@ -12369,7 +12547,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             }
             await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
 
-            return self._message_to_proto(msg)
+            return pb
 
     async def DeleteMessage(self, request, context):
         user_uuid = await self._require_current_user(context)
@@ -12380,21 +12558,30 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             if not msg:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Message not found")
 
+            # Права: автор или администратор чата
             if msg.sender_id != user_uuid:
-                res = await session.execute(
-                    select(ChatMember).where(
-                        ChatMember.chat_id == chat_uuid,
-                        ChatMember.user_id == user_uuid,
-                        ChatMember.status == MemberStatus.active,
-                    )
+                # Проверяем, является ли пользователь админом/владельцем чата
+                member_stmt = select(ChatMember).where(
+                    ChatMember.chat_id == chat_uuid,
+                    ChatMember.user_id == user_uuid,
+                    ChatMember.status == MemberStatus.active,
                 )
-                member = res.scalar_one_or_none()
+                member = (await session.execute(member_stmt)).scalar_one_or_none()
                 if not member or member.role not in (MemberRole.admin, MemberRole.owner):
                     await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Insufficient permissions")
 
             msg.deleted_at = datetime.now(timezone.utc)
             await session.commit()
 
+            # Обновляем updated_at чата (последняя активность)
+            await session.execute(
+                update(Chat)
+                .where(Chat.chat_id == chat_uuid)
+                .values(updated_at=datetime.now(timezone.utc))
+            )
+            await session.commit()
+
+            # Публикуем событие удаления
             event_data = {
                 "event": "message.delete",
                 "payload": {
@@ -12825,14 +13012,13 @@ class Chat(Base):
     )
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)
     max_members: Mapped[int] = mapped_column(Integer, default=200)
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), server_default=text("now()")
-    )
 
     # Relationships
     creator = relationship("User", back_populates="owned_chats")
     members = relationship("ChatMember", back_populates="chat")
     messages = relationship("Message", back_populates="chat")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"), onupdate=text("now()"))
 
 
 # ---------- Chat Members ----------
@@ -14127,14 +14313,13 @@ class Chat(Base):
     )
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)
     max_members: Mapped[int] = mapped_column(Integer, default=200)
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), server_default=text("now()")
-    )
 
     # Relationships
     creator = relationship("User", back_populates="owned_chats")
     members = relationship("ChatMember", back_populates="chat")
     messages = relationship("Message", back_populates="chat")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"), onupdate=text("now()"))
 
 
 # ---------- Chat Members ----------

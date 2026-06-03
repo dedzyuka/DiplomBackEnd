@@ -21,6 +21,7 @@ dependencies = [
     "strawberry-graphql>=0.296.2",
     "minio>=7.2.20",
     "python-multipart>=0.0.29",
+    "httpx>=0.28.1",
 ]
 
 [tool.uv.workspace]

@@ -33,9 +33,10 @@ class AttachmentServicer(mess_pb2_grpc.AttachmentServiceServicer):
         if total_size > 5 * 1024 * 1024:
             await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "File too large (max 5MB)")
 
-        # Генерация уникального имени
+        # ✅ Генерируем ОДИН UUID для attachment_id и имени файла
+        attachment_id = uuid.uuid4()
         ext = metadata.file_name.split('.')[-1] if '.' in metadata.file_name else ''
-        object_name = f"attachments/{uuid.uuid4()}.{ext}" if ext else f"attachments/{uuid.uuid4()}"
+        object_name = f"attachments/{attachment_id}.{ext}" if ext else f"attachments/{attachment_id}"
         file_bytes = b''.join(chunks)
         content_type = metadata.mime_type or "application/octet-stream"
 
@@ -48,7 +49,7 @@ class AttachmentServicer(mess_pb2_grpc.AttachmentServiceServicer):
         # Сохраняем в БД
         async with AsyncSessionLocal() as session:
             attachment = Attachment(
-                attachment_id=uuid.uuid4(),
+                attachment_id=attachment_id,
                 message_id=None,  # временно, будет обновлено при привязке к сообщению
                 message_created_at=datetime.now(timezone.utc),
                 file_name=metadata.file_name,
@@ -63,7 +64,8 @@ class AttachmentServicer(mess_pb2_grpc.AttachmentServiceServicer):
 
         return mess_pb2.UploadAttachmentResponse(
             attachment_id=str(attachment.attachment_id),
-            storage_path=object_name)       
+            storage_path=object_name
+        )
 
     async def GetAttachment(self, request, context):
         user_id = await require_current_user_uuid(context)  # авторизация

@@ -20,6 +20,8 @@ from strawberry.fastapi import GraphQLRouter
 from FastApiClient.graphql.schema import schema
 from FastApiClient.graphql.context import get_context
 from FastApiClient.api.endpoints import upload
+import httpx
+from fastapi import Response
 
 
 app = FastAPI(title="FastAPI + GraphQL + gRPC (nested groups)")
@@ -37,3 +39,11 @@ app.include_router(upload.router)
 @app.get("/")
 async def root():
     return {"message": "Welcome to FastAPI GraphQL gRPC example"}
+
+@app.get("/media/{path:path}")
+async def get_media(path: str):
+    # Опционально: проверка авторизации
+    minio_url = f"http://localhost:9000/messenger/{path}"
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(minio_url)
+        return Response(content=resp.content, media_type=resp.headers.get("content-type"))
