@@ -66,6 +66,8 @@ def from_grpc_chat(grpc_chat) -> GraphQLChat:
         max_members=int(grpc_chat.max_members),
         created_at=created_iso,
         members_count=int(getattr(grpc_chat, "members_count", 0)),
+        last_message=None,
+        last_message_preview=None,   # <--- ДОБАВИТЬ
     )
 
 

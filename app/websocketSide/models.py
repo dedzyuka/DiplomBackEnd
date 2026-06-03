@@ -87,14 +87,13 @@ class Chat(Base):
     )
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)
     max_members: Mapped[int] = mapped_column(Integer, default=200)
-    created_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True), server_default=text("now()")
-    )
 
     # Relationships
     creator = relationship("User", back_populates="owned_chats")
     members = relationship("ChatMember", back_populates="chat")
     messages = relationship("Message", back_populates="chat")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"), onupdate=text("now()"))
 
 
 # ---------- Chat Members ----------

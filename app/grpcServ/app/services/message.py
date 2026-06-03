@@ -4,13 +4,13 @@ import uuid
 import grpc
 from datetime import datetime, timezone
 from google.protobuf.empty_pb2 import Empty
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
 from services.access_session import require_current_user_uuid
 from services.enums import MemberRole, MemberStatus
-from services.models import Attachment, ChatMember, Message, MessageStatus, Reaction
+from services.models import Attachment, Chat, ChatMember, Message, MessageStatus, Reaction
 from services.redis_client import redis_client
 from core.config import settings
 from google.protobuf.timestamp_pb2 import Timestamp
@@ -164,6 +164,15 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                         session.add(attachment)
 
             await session.commit()
+
+            # Обновляем updated_at чата (последняя активность)
+            await session.execute(
+                update(Chat)
+                .where(Chat.chat_id == chat_uuid)
+                .values(updated_at=datetime.now(timezone.utc))
+            )
+            await session.commit()
+
             await session.refresh(msg)
 
             # Загружаем статусы для ответа
@@ -181,13 +190,13 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             for att in attachments:
                 pb.attachments.append(self._attachment_to_proto(att))
 
-            # Загружаем и добавляем реакции (если нужны)
+            # Загружаем и добавляем реакции
             reactions_stmt = select(Reaction).where(Reaction.message_id == msg.message_id)
             reactions = (await session.execute(reactions_stmt)).scalars().all()
             for r in reactions:
                 pb.reactions.append(self._reaction_to_proto(r))
 
-            # Публикация в Redis (не меняем)
+            # Публикация в Redis
             attachments_list = [
                 {
                     "attachment_id": str(att.attachment_id),
@@ -348,8 +357,38 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             msg.is_edited = True
 
             await session.commit()
+
+            # Обновляем updated_at чата (последняя активность)
+            await session.execute(
+                update(Chat)
+                .where(Chat.chat_id == chat_uuid)
+                .values(updated_at=datetime.now(timezone.utc))
+            )
+            await session.commit()
+
             await session.refresh(msg)
 
+            # Загружаем статусы для ответа
+            statuses_res = await session.execute(
+                select(MessageStatus).where(MessageStatus.message_id == msg.message_id)
+            )
+            statuses = statuses_res.scalars().all()
+
+            pb = self._message_to_proto(msg, statuses)
+
+            # Добавляем вложения
+            attachments_stmt = select(Attachment).where(Attachment.message_id == msg.message_id)
+            attachments = (await session.execute(attachments_stmt)).scalars().all()
+            for att in attachments:
+                pb.attachments.append(self._attachment_to_proto(att))
+
+            # Добавляем реакции
+            reactions_stmt = select(Reaction).where(Reaction.message_id == msg.message_id)
+            reactions = (await session.execute(reactions_stmt)).scalars().all()
+            for r in reactions:
+                pb.reactions.append(self._reaction_to_proto(r))
+
+            # Публикуем событие обновления
             event_data = {
                 "event": "message.update",
                 "payload": {
@@ -362,7 +401,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             }
             await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
 
-            return self._message_to_proto(msg)
+            return pb
 
     async def DeleteMessage(self, request, context):
         user_uuid = await self._require_current_user(context)
@@ -373,21 +412,30 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             if not msg:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Message not found")
 
+            # Права: автор или администратор чата
             if msg.sender_id != user_uuid:
-                res = await session.execute(
-                    select(ChatMember).where(
-                        ChatMember.chat_id == chat_uuid,
-                        ChatMember.user_id == user_uuid,
-                        ChatMember.status == MemberStatus.active,
-                    )
+                # Проверяем, является ли пользователь админом/владельцем чата
+                member_stmt = select(ChatMember).where(
+                    ChatMember.chat_id == chat_uuid,
+                    ChatMember.user_id == user_uuid,
+                    ChatMember.status == MemberStatus.active,
                 )
-                member = res.scalar_one_or_none()
+                member = (await session.execute(member_stmt)).scalar_one_or_none()
                 if not member or member.role not in (MemberRole.admin, MemberRole.owner):
                     await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Insufficient permissions")
 
             msg.deleted_at = datetime.now(timezone.utc)
             await session.commit()
 
+            # Обновляем updated_at чата (последняя активность)
+            await session.execute(
+                update(Chat)
+                .where(Chat.chat_id == chat_uuid)
+                .values(updated_at=datetime.now(timezone.utc))
+            )
+            await session.commit()
+
+            # Публикуем событие удаления
             event_data = {
                 "event": "message.delete",
                 "payload": {

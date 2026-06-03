@@ -3,9 +3,25 @@ import strawberry
 from typing import List
 
 from FastApiClient.graphql.context import GraphQLContext
-from FastApiClient.utils.converter import from_grpc_chat, from_grpc_user
+from .types import MessagePreview as GQLMessagePreview
+from FastApiClient.utils.converter import from_grpc_chat, _ts_to_iso, from_grpc_user
 from FastApiClient.graphql.domain.user.types import User
 from .types import Chat
+
+
+def _to_message_preview(grpc_preview):
+    """Конвертирует protobuf MessagePreview в GraphQL MessagePreview (один аргумент)."""
+    if not grpc_preview:
+        return None
+
+    return GQLMessagePreview(
+        message_id=grpc_preview.message_id,
+        sender_id=grpc_preview.sender_id,
+        sender_nickname=None,  # можно позже подгрузить через дополнительный запрос
+        text_preview=grpc_preview.text_preview if grpc_preview.HasField("text_preview") else None,
+        created_at=_ts_to_iso(grpc_preview.created_at),
+        type=str(grpc_preview.type),
+    )
 
 
 @strawberry.type
@@ -22,7 +38,10 @@ class ChatQueries:
                 current_user_id=current_user_id,
             )
         )
-        return from_grpc_chat(grpc_chat)
+        gql_chat = from_grpc_chat(grpc_chat)
+        if grpc_chat.HasField("last_message_preview"):
+            gql_chat.last_message_preview = _to_message_preview(grpc_chat.last_message_preview)
+        return gql_chat
 
     @strawberry.field
     async def list(
@@ -43,7 +62,13 @@ class ChatQueries:
                 current_user_id=current_user_id,
             )
         )
-        return [from_grpc_chat(chat) for chat in grpc_resp.chats]
+        chats = []
+        for grpc_chat in grpc_resp.chats:
+            gql_chat = from_grpc_chat(grpc_chat)
+            if grpc_chat.HasField("last_message_preview"):
+                gql_chat.last_message_preview = _to_message_preview(grpc_chat.last_message_preview)
+            chats.append(gql_chat)
+        return chats
 
     @strawberry.field
     async def members(
@@ -52,7 +77,7 @@ class ChatQueries:
         info: strawberry.Info[GraphQLContext],
         page: int = 1,
         page_size: int = 50,
-    ) -> List[User]:   # изменён тип возврата
+    ) -> List[User]:
         access_token = info.context.require_access_token()
         current_user_id = info.context.require_user_id()
 
@@ -65,10 +90,8 @@ class ChatQueries:
                 current_user_id=current_user_id,
             )
         )
-        # grpc_resp.members – список объектов ChatMember, у каждого есть user_id
         users = []
         for member in grpc_resp.members:
-            # Получаем пользователя через user_client
             grpc_user = await anyio.to_thread.run_sync(
                 lambda: info.context.user_client.get_user(member.user_id)
             )

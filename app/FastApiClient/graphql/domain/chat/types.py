@@ -1,6 +1,15 @@
 
+from typing import Optional
 import strawberry
 
+@strawberry.type
+class MessagePreview:
+    message_id: int
+    sender_id: str
+    sender_nickname: str | None = None
+    text_preview: str | None
+    created_at: str
+    type: str
 
 @strawberry.type
 class Chat:
@@ -15,3 +24,6 @@ class Chat:
     created_at: str
     last_message: str | None = None
     members_count: int = 0
+    last_message_preview: Optional[MessagePreview] = None  
+
+

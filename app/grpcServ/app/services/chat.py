@@ -1,14 +1,16 @@
-from google.protobuf.empty_pb2 import Empty
+from typing import Optional
 import uuid
 import datetime
 import grpc
+from google.protobuf.empty_pb2 import Empty
 from google.protobuf.timestamp_pb2 import Timestamp
-from sqlalchemy import select, func, update, delete
+from sqlalchemy import delete, select, func, update, desc
+from sqlalchemy.orm import selectinload
 
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
 from services.access_session import require_current_user_uuid
-from services.models import Chat, User, ChatMember
+from services.models import Chat, User, ChatMember, Message, Attachment
 from services.enums import (
     ChatType as DbChatType,
     MemberRole as DbMemberRole,
@@ -41,6 +43,19 @@ PROTO_STATUS_TO_DB = {
     mess_pb2.LEFT: DbMemberStatus.left,
     mess_pb2.BANNED: DbMemberStatus.banned,
 }
+# В начале файла после импортов
+DB_MESSAGE_TYPE_TO_PROTO = {
+    "text": mess_pb2.TEXT,
+    "image": mess_pb2.IMAGE,
+    "video": mess_pb2.VIDEO,
+    "audio": mess_pb2.AUDIO,
+    "file": mess_pb2.FILE,
+    "voice": mess_pb2.VOICE,
+    "sticker": mess_pb2.STICKER,
+    "location": mess_pb2.LOCATION,
+    "contact": mess_pb2.CONTACT,
+    "system": mess_pb2.SYSTEM,
+}
 
 
 class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
@@ -71,7 +86,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             DbChatType.channel: mess_pb2.CHANNEL,
         }[chat_type]
 
-    async def _build_chat_proto(self, session, chat: Chat) -> mess_pb2.Chat:
+    async def _build_chat_proto(self, session, chat: Chat, current_user_id: Optional[uuid.UUID] = None) -> mess_pb2.Chat:
         members_count = (
             await session.execute(
                 select(func.count()).select_from(ChatMember).where(
@@ -88,8 +103,8 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             max_members=int(chat.max_members),
             created_at=_dt_to_ts(chat.created_at),
             members_count=int(members_count),
-            updated_at=_dt_to_ts(chat.created_at),
-            last_activity_at=_dt_to_ts(chat.created_at),
+            updated_at=_dt_to_ts(chat.updated_at or chat.created_at),
+            last_activity_at=_dt_to_ts(chat.updated_at or chat.created_at),
             visibility=mess_pb2.VISIBILITY_PUBLIC if chat.is_public else mess_pb2.VISIBILITY_PRIVATE,
             join_policy=mess_pb2.JOIN_OPEN if chat.is_public else mess_pb2.JOIN_INVITE_ONLY,
         )
@@ -101,8 +116,67 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             resp.avatar_url = chat.avatar_url
         if chat.creator_id is not None:
             resp.creator_id = str(chat.creator_id)
-        return resp
 
+        # Добавляем preview последнего сообщения (если есть)
+        if current_user_id:
+            preview = await self._get_last_message_preview(session, chat.chat_id)
+            if preview:
+                resp.last_message_preview.CopyFrom(preview)
+
+        return resp
+    
+    async def _get_last_message_preview(self, session, chat_id: uuid.UUID) -> Optional[mess_pb2.MessagePreview]:
+        """Возвращает MessagePreview для последнего не удалённого сообщения в чате."""
+        print(f"🔍 Getting last message preview for chat {chat_id}")
+        stmt = (
+            select(Message)
+            .where(Message.chat_id == chat_id, Message.deleted_at.is_(None))
+            .order_by(desc(Message.created_at))
+            .limit(1)
+        )
+        last_msg = (await session.execute(stmt)).scalar_one_or_none()
+        if not last_msg:
+            return None
+
+        # Текстовое превью
+        text_preview = None
+        if last_msg.content and last_msg.content.strip():
+            text_preview = last_msg.content
+        else:
+            # Если есть вложения
+            att_stmt = select(Attachment).where(Attachment.message_id == last_msg.message_id)
+            attachments = (await session.execute(att_stmt)).scalars().all()
+            if attachments:
+                first = attachments[0]
+                if first.mime_type:
+                    if first.mime_type.startswith('image/'):
+                        text_preview = "📷 Изображение"
+                    elif first.mime_type.startswith('video/'):
+                        text_preview = "🎥 Видео"
+                    elif first.mime_type.startswith('audio/'):
+                        text_preview = "🎵 Аудио"
+                    else:
+                        text_preview = "📎 Файл"
+                else:
+                    text_preview = "Вложение"
+            else:
+                text_preview = ""
+
+
+        msg_type_enum = DB_MESSAGE_TYPE_TO_PROTO.get(last_msg.type, mess_pb2.TEXT)
+
+        preview = mess_pb2.MessagePreview(
+            message_id=last_msg.message_id,
+            sender_id=str(last_msg.sender_id),
+            type=msg_type_enum,
+            created_at=_dt_to_ts(last_msg.created_at),
+            is_deleted=False,
+        )
+        if text_preview:
+            preview.text_preview = text_preview
+        print(f"✅ Preview created: {preview}")
+        return preview
+    
     async def _build_member_proto(self, session, member: ChatMember) -> mess_pb2.ChatMember:
         resp = mess_pb2.ChatMember(
             chat_id=str(member.chat_id),
@@ -502,13 +576,15 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                         ChatMember.user_id == current_user_uuid,
                         ChatMember.status == DbMemberStatus.active,
                     )
-                    .order_by(Chat.created_at.desc())
+                    .order_by(Chat.updated_at.desc(), Chat.created_at.desc())
                     .offset(offset)
                     .limit(page_size)
                 )
             ).scalars().all()
 
-            chats = [await self._build_chat_proto(session, c) for c in rows]
+            # Передаём current_user_uuid в _build_chat_proto
+            chats = [await self._build_chat_proto(session, c, current_user_uuid) for c in rows]
+
             next_page = str(offset + page_size) if offset + page_size < total else ""
             return mess_pb2.ChatsListResponse(
                 chats=chats,
@@ -748,7 +824,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
     async def ListChatsV2(
         self, request: mess_pb2.ListChatsRequestV2, context
     ) -> mess_pb2.ChatsListResponseV2:
-        legacy = await self.ListChats(
+        legacy_response = await self.ListChats(
             mess_pb2.ListChatsRequest(
                 user_id=request.user_id,
                 page_size=request.page_size,
@@ -756,24 +832,24 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             ),
             context,
         )
-
         chats = []
-        for c in legacy.chats:
-            title = c.name if c.HasField("name") else f"Chat {c.chat_id[:8]}"
+        for c in legacy_response.chats:
             summary = mess_pb2.ChatSummary(
                 chat_id=c.chat_id,
                 chat_type=c.chat_type,
-                title=title,
-                visibility=mess_pb2.VISIBILITY_PUBLIC if c.is_public else mess_pb2.VISIBILITY_PRIVATE,
-                join_policy=mess_pb2.JOIN_OPEN if c.is_public else mess_pb2.JOIN_INVITE_ONLY,
+                title=c.name if c.HasField("name") else f"Chat {c.chat_id[:8]}",
+                visibility=c.visibility,
+                join_policy=c.join_policy,
                 members_count=c.members_count,
-                last_activity_at=c.created_at,
+                last_activity_at=c.last_activity_at,
                 my_role=mess_pb2.MEMBER,
                 is_muted=False,
                 is_archived=False,
             )
             if c.HasField("avatar_url"):
                 summary.avatar_url = c.avatar_url
+            if request.include_last_message and c.HasField("last_message_preview"):
+                summary.last_message.CopyFrom(c.last_message_preview)
             if request.include_counters:
                 summary.counters.unread_count = 0
                 summary.counters.has_mentions = False
@@ -781,8 +857,8 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
 
         return mess_pb2.ChatsListResponseV2(
             chats=chats,
-            next_page_token=legacy.next_page_token,
-            total_count=legacy.total_count,
+            next_page_token=legacy_response.next_page_token,
+            total_count=legacy_response.total_count,
         )
 
     async def BatchGetChats(

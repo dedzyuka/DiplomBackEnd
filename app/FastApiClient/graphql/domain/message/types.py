@@ -1,7 +1,6 @@
 import strawberry
 from typing import Optional, List
 
-
 @strawberry.type
 class Attachment:
     attachment_id: str
@@ -11,7 +10,6 @@ class Attachment:
     storage_path: str
     uploaded_at: str
 
-
 @strawberry.type
 class Reaction:
     message_id: int
@@ -19,13 +17,20 @@ class Reaction:
     emoji: str
     created_at: str
 
-
 @strawberry.type
 class MessageStatusInfo:
     user_id: str
     delivered_at: Optional[str] = None
     read_at: Optional[str] = None
 
+@strawberry.type
+class MessagePreview:
+    message_id: int
+    sender_id: str
+    sender_nickname: Optional[str] = None
+    text_preview: Optional[str] = None
+    created_at: str
+    type: str
 
 @strawberry.type
 class Message:
@@ -42,5 +47,5 @@ class Message:
     attachments: List[Attachment] = strawberry.field(default_factory=list)
     reactions: List[Reaction] = strawberry.field(default_factory=list)
     statuses: List[MessageStatusInfo] = strawberry.field(default_factory=list)
-    delivered_at: Optional[str] = None      # <-- добавить
-    read_at: Optional[str] = None           # <-- добавить
+    delivered_at: Optional[str] = None
+    read_at: Optional[str] = None
