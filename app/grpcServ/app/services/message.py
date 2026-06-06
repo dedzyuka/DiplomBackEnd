@@ -215,6 +215,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                     "sender_id": str(msg.sender_id),
                     "content": msg.content or "",
                     "created_at": msg.created_at.isoformat(),
+                    "reply_to_id": msg.reply_to_id if msg.reply_to_id else None,   # добавлено
                     "attachments": attachments_list,
                 }
             }
