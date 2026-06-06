@@ -15,7 +15,8 @@
 # async def health():
 #     return {"status": "ok"}
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from strawberry.fastapi import GraphQLRouter
 from FastApiClient.graphql.schema import schema
 from FastApiClient.graphql.context import get_context
@@ -41,9 +42,30 @@ async def root():
     return {"message": "Welcome to FastAPI GraphQL gRPC example"}
 
 @app.get("/media/{path:path}")
-async def get_media(path: str):
-    # Опционально: проверка авторизации
+async def get_media(request: Request, path: str):
+    # Формируем URL к MinIO (используйте ваш актуальный endpoint и bucket)
     minio_url = f"http://localhost:9000/messenger/{path}"
+    
+    # Передаём Range заголовок, если он есть
+    headers = {}
+    if range_header := request.headers.get("range"):
+        headers["Range"] = range_header
+
     async with httpx.AsyncClient() as client:
-        resp = await client.get(minio_url)
-        return Response(content=resp.content, media_type=resp.headers.get("content-type"))
+        # Отправляем запрос в MinIO
+        resp = await client.get(minio_url, headers=headers, follow_redirects=True)
+        
+        if resp.status_code == 404:
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        # Возвращаем потоково (чанками) с правильными заголовками
+        return StreamingResponse(
+            resp.aiter_bytes(),  # асинхронный генератор чанков
+            status_code=resp.status_code,
+            headers={
+                "Content-Type": resp.headers.get("content-type", "video/mp4"),
+                "Content-Length": resp.headers.get("content-length", ""),
+                "Accept-Ranges": "bytes",
+                "Content-Range": resp.headers.get("content-range", ""),
+            }
+        )

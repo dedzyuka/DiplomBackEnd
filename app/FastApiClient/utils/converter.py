@@ -55,6 +55,18 @@ def from_grpc_chat(grpc_chat) -> GraphQLChat:
     dt = grpc_chat.created_at.ToDatetime().astimezone(timezone.utc)
     created_iso = dt.isoformat()
 
+    # my_role: 0 = unspecified, 1 = owner, 2 = admin, 3 = member
+    my_role = None
+    if grpc_chat.my_role != 0:  # не unspecified
+        role_map = {1: "owner", 2: "admin", 3: "member"}
+        my_role = role_map.get(grpc_chat.my_role, "member")
+
+    # join_policy: 0 = unspecified, 1 = invite_only, 2 = request_approval, 3 = open
+    join_policy = None
+    if grpc_chat.join_policy != 0:
+        policy_map = {1: "invite_only", 2: "request_approval", 3: "open"}
+        join_policy = policy_map.get(grpc_chat.join_policy, "invite_only")
+
     return GraphQLChat(
         chat_id=str(grpc_chat.chat_id),
         chat_type=str(grpc_chat.chat_type),
@@ -67,7 +79,9 @@ def from_grpc_chat(grpc_chat) -> GraphQLChat:
         created_at=created_iso,
         members_count=int(getattr(grpc_chat, "members_count", 0)),
         last_message=None,
-        last_message_preview=None,   # <--- ДОБАВИТЬ
+        last_message_preview=None,
+        my_role=my_role,
+        join_policy=join_policy,
     )
 
 

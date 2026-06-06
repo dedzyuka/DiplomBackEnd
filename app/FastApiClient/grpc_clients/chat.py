@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List, Optional
 import grpc
 
@@ -126,6 +127,73 @@ class ChatGrpcClient(BaseGrpcClient):
             )
         except grpc.RpcError as e:
             self._handle_rpc_error(e)
+
+    def generate_invite_link(self, chat_id: str, access_token: Optional[str] = None, current_user_id: Optional[str] = None):
+        request = mess_pb2.GenerateInviteLinkRequest(chat_id=chat_id)
+        try:
+            return self.stub.GenerateInviteLink(
+                request,
+                timeout=5,
+                metadata=self._auth_metadata(access_token, current_user_id),
+            )
+        except grpc.RpcError as e:
+            self._handle_rpc_error(e)
+
+    def join_chat_with_token(self, invite_token: str, access_token: Optional[str] = None, current_user_id: Optional[str] = None):
+        """Вступление в чат по invite токену (через JoinChatRequest с заполненным invite_token)"""
+        # Протокол требует chat_id и user_id, но на сервере они будут переопределены по токену
+        request = mess_pb2.JoinChatRequest(
+            chat_id="",
+            user_id="",
+            invite_token=invite_token
+        )
+        try:
+            return self.stub.JoinChat(
+                request,
+                timeout=5,
+                metadata=self._auth_metadata(access_token, current_user_id),
+            )
+        except grpc.RpcError as e:
+            self._handle_rpc_error(e)
+
+    def update_chat_member(self, chat_id: str, user_id: str, role: Optional[str] = None,
+                           status: Optional[str] = None, banned_until: Optional[str] = None,
+                           access_token: Optional[str] = None, current_user_id: Optional[str] = None):
+        req = mess_pb2.UpdateChatMemberRequest(chat_id=chat_id, user_id=user_id)
+        if role is not None:
+            role_map = {"owner": mess_pb2.OWNER, "admin": mess_pb2.ADMIN, "member": mess_pb2.MEMBER}
+            req.role = role_map.get(role.lower(), mess_pb2.MEMBER)
+        if status is not None:
+            status_map = {"active": mess_pb2.ACTIVE_N, "left": mess_pb2.LEFT, "banned": mess_pb2.BANNED}
+            req.status = status_map.get(status.lower(), mess_pb2.ACTIVE_N)
+        if banned_until is not None:
+            # парсим ISO строку в Timestamp
+            dt = datetime.fromisoformat(banned_until.replace('Z', '+00:00'))
+            req.banned_until.FromDatetime(dt)
+        try:
+            return self.stub.UpdateChatMember(req, timeout=5, metadata=self._auth_metadata(access_token, current_user_id))
+        except grpc.RpcError as e:
+            self._handle_rpc_error(e)
+
+    def kick_member(self, chat_id: str, user_id: str, access_token: Optional[str] = None, current_user_id: Optional[str] = None):
+        return self.stub.KickMember(mess_pb2.KickMemberRequest(chat_id=chat_id, user_id=user_id),
+                                    timeout=5, metadata=self._auth_metadata(access_token, current_user_id))
+
+    def ban_member(self, chat_id: str, user_id: str, banned_until: Optional[str] = None,
+                   access_token: Optional[str] = None, current_user_id: Optional[str] = None):
+        req = mess_pb2.BanMemberRequest(chat_id=chat_id, user_id=user_id)
+        if banned_until:
+            dt = datetime.fromisoformat(banned_until.replace('Z', '+00:00'))
+            req.banned_until.FromDatetime(dt)
+        return self.stub.BanMember(req, timeout=5, metadata=self._auth_metadata(access_token, current_user_id))
+
+    def unban_member(self, chat_id: str, user_id: str, access_token: Optional[str] = None, current_user_id: Optional[str] = None):
+        return self.stub.UnbanMember(mess_pb2.UnbanMemberRequest(chat_id=chat_id, user_id=user_id),
+                                     timeout=5, metadata=self._auth_metadata(access_token, current_user_id))
+
+    def leave_chat(self, chat_id: str, user_id: str, access_token: Optional[str] = None, current_user_id: Optional[str] = None):
+        return self.stub.LeaveChat(mess_pb2.LeaveChatRequest(chat_id=chat_id, user_id=user_id),
+                                   timeout=5, metadata=self._auth_metadata(access_token, current_user_id))
 
     def remove_chat_member(self, chat_id: str, user_id: str, access_token: Optional[str] = None,
                            current_user_id: Optional[str] = None) -> None:

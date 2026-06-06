@@ -1,7 +1,10 @@
 
-from typing import Optional
-import strawberry
 
+from typing import Optional, List
+import strawberry
+from FastApiClient.graphql.domain.user.types import User
+
+# Существующий тип MessagePreview
 @strawberry.type
 class MessagePreview:
     message_id: int
@@ -24,6 +27,15 @@ class Chat:
     created_at: str
     last_message: str | None = None
     members_count: int = 0
-    last_message_preview: Optional[MessagePreview] = None  
+    last_message_preview: Optional[MessagePreview] = None
+    my_role: Optional[str] = None          # <-- новое поле
+    join_policy: Optional[str] = None      # <-- новое поле
 
-
+@strawberry.type
+class ChatMember:
+    user: User
+    role: str
+    status: str
+    joined_at: str
+    left_at: Optional[str] = None
+    banned_until: Optional[str] = None

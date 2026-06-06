@@ -127,8 +127,9 @@ message Chat {
   google.protobuf.Timestamp updated_at = 12;
   google.protobuf.Timestamp last_activity_at = 13;
   ChatVisibility visibility = 14;
-  JoinPolicy join_policy = 15;
+  optional JoinPolicy join_policy = 15;
   optional MessagePreview last_message_preview = 16;
+  optional MemberRole my_role = 17;      // роль текущего пользователя в чате
 }
 
 message ChatMember {
@@ -683,6 +684,14 @@ message EmojisListResponse {
 }
 
 // ========== Services ==========
+message GenerateInviteLinkRequest {
+    string chat_id = 1;
+}
+
+message InviteLink {
+    string invite_key = 1;
+    google.protobuf.Timestamp expire_at = 2;
+}
 
 service UserService {
   rpc CreateUser(CreateUserRequest) returns (User);
@@ -735,6 +744,7 @@ service ChatService {
   rpc KickMember(KickMemberRequest) returns (google.protobuf.Empty);
   rpc BanMember(BanMemberRequest) returns (google.protobuf.Empty);
   rpc UnbanMember(UnbanMemberRequest) returns (google.protobuf.Empty);
+  rpc GenerateInviteLink(GenerateInviteLinkRequest) returns (InviteLink);
 }
 
 service MessageService {

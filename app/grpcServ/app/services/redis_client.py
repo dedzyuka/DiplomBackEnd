@@ -116,6 +116,21 @@ class RedisClient:
 
     async def publish(self, channel: str, message: str) -> None:
         await self._redis.publish(channel, message)
+        
+    async def set_invite_token(self, token: str, chat_id: str, ttl_seconds: int = 86400) -> None:
+        """Сохраняет invite токен → chat_id на заданное время (по умолчанию 24 часа)."""
+        key = self._key("invite", token)
+        await self._redis.setex(key, ttl_seconds, chat_id)
+
+    async def get_invite_chat_id(self, token: str) -> Optional[str]:
+        """Возвращает chat_id по invite токену или None."""
+        key = self._key("invite", token)
+        return await self._redis.get(key)
+
+    async def delete_invite_token(self, token: str) -> None:
+        """Удаляет invite токен (опционально)."""
+        key = self._key("invite", token)
+        await self._redis.delete(key)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_PREFIX = os.getenv("REDIS_PREFIX", "messenger")

@@ -27,9 +27,7 @@ if _version_not_supported:
 
 
 class UserServiceStub(object):
-    """========== Services ==========
-
-    """
+    """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
         """Constructor.
@@ -80,9 +78,7 @@ class UserServiceStub(object):
 
 
 class UserServiceServicer(object):
-    """========== Services ==========
-
-    """
+    """Missing associated documentation comment in .proto file."""
 
     def CreateUser(self, request, context):
         """Missing associated documentation comment in .proto file."""
@@ -184,9 +180,7 @@ def add_UserServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class UserService(object):
-    """========== Services ==========
-
-    """
+    """Missing associated documentation comment in .proto file."""
 
     @staticmethod
     def CreateUser(request,
@@ -1111,6 +1105,11 @@ class ChatServiceStub(object):
                 request_serializer=mess__pb2.UnbanMemberRequest.SerializeToString,
                 response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
                 _registered_method=True)
+        self.GenerateInviteLink = channel.unary_unary(
+                '/messenger.ChatService/GenerateInviteLink',
+                request_serializer=mess__pb2.GenerateInviteLinkRequest.SerializeToString,
+                response_deserializer=mess__pb2.InviteLink.FromString,
+                _registered_method=True)
 
 
 class ChatServiceServicer(object):
@@ -1213,6 +1212,12 @@ class ChatServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GenerateInviteLink(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ChatServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -1295,6 +1300,11 @@ def add_ChatServiceServicer_to_server(servicer, server):
                     servicer.UnbanMember,
                     request_deserializer=mess__pb2.UnbanMemberRequest.FromString,
                     response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            ),
+            'GenerateInviteLink': grpc.unary_unary_rpc_method_handler(
+                    servicer.GenerateInviteLink,
+                    request_deserializer=mess__pb2.GenerateInviteLinkRequest.FromString,
+                    response_serializer=mess__pb2.InviteLink.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -1729,6 +1739,33 @@ class ChatService(object):
             '/messenger.ChatService/UnbanMember',
             mess__pb2.UnbanMemberRequest.SerializeToString,
             google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GenerateInviteLink(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.ChatService/GenerateInviteLink',
+            mess__pb2.GenerateInviteLinkRequest.SerializeToString,
+            mess__pb2.InviteLink.FromString,
             options,
             channel_credentials,
             insecure,

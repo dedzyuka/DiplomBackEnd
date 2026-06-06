@@ -1,12 +1,14 @@
 from typing import Optional
 import uuid
-import datetime
+from datetime import datetime, timezone, timedelta
 import grpc
 from google.protobuf.empty_pb2 import Empty
 from google.protobuf.timestamp_pb2 import Timestamp
 from sqlalchemy import delete, select, func, update, desc
 from sqlalchemy.orm import selectinload
 
+
+from services.redis_client import redis_client
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
 from services.access_session import require_current_user_uuid
@@ -18,9 +20,9 @@ from services.enums import (
 )
 
 
-def _dt_to_ts(dt: datetime.datetime) -> Timestamp:
+def _dt_to_ts(dt: datetime) -> Timestamp:
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=datetime.timezone.utc)
+        dt = dt.replace(tzinfo=timezone.utc)
     ts = Timestamp()
     ts.FromDatetime(dt)
     return ts
@@ -96,6 +98,13 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             )
         ).scalar_one()
 
+        # Определяем join_policy
+        if chat.is_public:
+            join_policy = mess_pb2.JOIN_OPEN
+        else:
+            join_policy = mess_pb2.JOIN_INVITE_ONLY
+
+        # Создаём базовый объект Chat
         resp = mess_pb2.Chat(
             chat_id=str(chat.chat_id),
             chat_type=self._db_chat_type_to_proto(chat.chat_type),
@@ -106,8 +115,10 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             updated_at=_dt_to_ts(chat.updated_at or chat.created_at),
             last_activity_at=_dt_to_ts(chat.updated_at or chat.created_at),
             visibility=mess_pb2.VISIBILITY_PUBLIC if chat.is_public else mess_pb2.VISIBILITY_PRIVATE,
-            join_policy=mess_pb2.JOIN_OPEN if chat.is_public else mess_pb2.JOIN_INVITE_ONLY,
+            join_policy=join_policy,
         )
+
+        # Опциональные строковые поля
         if chat.name is not None:
             resp.name = chat.name
         if chat.description is not None:
@@ -117,14 +128,24 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
         if chat.creator_id is not None:
             resp.creator_id = str(chat.creator_id)
 
-        # Добавляем preview последнего сообщения (если есть)
+        # my_role – роль текущего пользователя (всегда устанавливаем)
+        if current_user_id:
+            actor = await self._get_actor_member(session, chat.chat_id, current_user_id)
+            if actor:
+                resp.my_role = self._db_role_to_proto(actor.role)
+            else:
+                resp.my_role = mess_pb2.MEMBER_ROLE_UNSPECIFIED
+        else:
+            resp.my_role = mess_pb2.MEMBER_ROLE_UNSPECIFIED
+
+        # Предпросмотр последнего сообщения
         if current_user_id:
             preview = await self._get_last_message_preview(session, chat.chat_id)
             if preview:
                 resp.last_message_preview.CopyFrom(preview)
 
         return resp
-    
+        
     async def _get_last_message_preview(self, session, chat_id: uuid.UUID) -> Optional[mess_pb2.MessagePreview]:
         """Возвращает MessagePreview для последнего не удалённого сообщения в чате."""
         print(f"🔍 Getting last message preview for chat {chat_id}")
@@ -400,7 +421,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 session.add(new_chat)
                 await session.flush()
 
-                now = datetime.datetime.now(datetime.timezone.utc)
+                now = datetime.now(timezone.utc)
                 for u in member_uuids:
                     session.add(
                         ChatMember(
@@ -913,66 +934,80 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 chats.append(summary)
             return mess_pb2.BatchGetChatsResponse(chats=chats)
 
-    async def JoinChat(
-        self, request: mess_pb2.JoinChatRequest, context
-    ) -> mess_pb2.ChatMember:
+    async def JoinChat(self, request: mess_pb2.JoinChatRequest, context) -> mess_pb2.ChatMember:
         current_user_uuid = await self._require_current_user_uuid(context)
-        try:
-            chat_uuid = uuid.UUID(request.chat_id)
-            target_user = uuid.UUID(request.user_id)
-        except Exception:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid chat_id/user_id")
 
-        if current_user_uuid != target_user:
-            await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Can join only as current user")
+        chat_uuid = None
+        target_user_uuid = current_user_uuid   # по умолчанию
+
+        # Определяем chat_id: если передан invite_token, получаем chat_id из Redis
+        if request.HasField("invite_token") and request.invite_token.strip():
+            invite_token = request.invite_token.strip()
+            chat_id_from_invite = await redis_client.get_invite_chat_id(invite_token)
+            if not chat_id_from_invite:
+                await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Invalid or expired invite token")
+            chat_uuid = uuid.UUID(chat_id_from_invite)
+            # Проверяем, что переданный user_id (если есть) совпадает с текущим
+            if request.user_id and request.user_id.strip():
+                requested_user = uuid.UUID(request.user_id)
+                if requested_user != current_user_uuid:
+                    await context.abort(grpc.StatusCode.PERMISSION_DENIED, "User mismatch")
+        else:
+            # Старый путь: ожидаем chat_id и user_id в запросе
+            try:
+                chat_uuid = uuid.UUID(request.chat_id)
+                target_user_uuid = uuid.UUID(request.user_id)
+            except Exception:
+                await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid chat_id/user_id")
+
+            if current_user_uuid != target_user_uuid:
+                await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Can join only as current user")
+
+        if not chat_uuid:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Chat identifier missing")
 
         async with AsyncSessionLocal() as session:
-            chat = (
-                await session.execute(select(Chat).where(Chat.chat_id == chat_uuid))
-            ).scalar_one_or_none()
+            # Проверяем существование чата
+            chat = (await session.execute(select(Chat).where(Chat.chat_id == chat_uuid))).scalar_one_or_none()
             if not chat:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Chat not found")
             if chat.chat_type == DbChatType.private:
                 await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "Cannot join PRIVATE chat")
 
-            member = (
-                await session.execute(
-                    select(ChatMember).where(
-                        ChatMember.chat_id == chat_uuid,
-                        ChatMember.user_id == target_user,
-                    )
+            # Проверяем, не забанен ли пользователь
+            member = (await session.execute(
+                select(ChatMember).where(
+                    ChatMember.chat_id == chat_uuid,
+                    ChatMember.user_id == target_user_uuid,
                 )
-            ).scalar_one_or_none()
+            )).scalar_one_or_none()
 
-            now = datetime.datetime.now(datetime.timezone.utc)
-            if (
-                member
-                and member.status == DbMemberStatus.banned
-                and (member.banned_until is None or member.banned_until > now)
-            ):
+            now = datetime.now(timezone.utc)
+            if member and member.status == DbMemberStatus.banned and (member.banned_until is None or member.banned_until > now):
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "User is banned")
             if member and member.status == DbMemberStatus.active:
+                # Уже активный участник
                 return await self._build_member_proto(session, member)
 
-            active_count = (
-                await session.execute(
-                    select(func.count()).select_from(ChatMember).where(
-                        ChatMember.chat_id == chat_uuid,
-                        ChatMember.status == DbMemberStatus.active,
-                    )
+            # Проверяем лимит участников
+            active_count = (await session.execute(
+                select(func.count()).select_from(ChatMember).where(
+                    ChatMember.chat_id == chat_uuid,
+                    ChatMember.status == DbMemberStatus.active,
                 )
-            ).scalar_one()
+            )).scalar_one()
             if active_count >= chat.max_members:
                 await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "max_members exceeded")
 
             if member:
+                # Восстанавливаем участника
                 member.status = DbMemberStatus.active
                 member.left_at = None
                 member.banned_until = None
             else:
                 member = ChatMember(
                     chat_id=chat_uuid,
-                    user_id=target_user,
+                    user_id=target_user_uuid,
                     role=DbMemberRole.member,
                     status=DbMemberStatus.active,
                     joined_at=now,
@@ -1146,3 +1181,26 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             member.left_at = None
             await session.commit()
             return Empty()
+        
+    async def GenerateInviteLink(self, request: mess_pb2.GenerateInviteLinkRequest, context):
+        current_user_uuid = await self._require_current_user_uuid(context)
+        chat_uuid = uuid.UUID(request.chat_id)
+
+        async with AsyncSessionLocal() as session:
+            actor = await self._get_actor_member(session, chat_uuid, current_user_uuid)
+            if not actor or actor.status != DbMemberStatus.active:
+                await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Not a member")
+
+            chat = (await session.execute(select(Chat).where(Chat.chat_id == chat_uuid))).scalar_one()
+            if chat.chat_type != DbChatType.private:
+                if actor.role not in (DbMemberRole.owner, DbMemberRole.admin):
+                    await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Only owner or admin can generate invite link")
+
+            token = str(uuid.uuid4())
+            ttl = 60 * 60 * 24  # 24 часа
+            await redis_client.set_invite_token(token, str(chat_uuid), ttl)
+
+            expire_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
+            resp = mess_pb2.InviteLink(invite_key=token)
+            resp.expire_at.FromDatetime(expire_at)
+            return resp
