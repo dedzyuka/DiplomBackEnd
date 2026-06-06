@@ -157,6 +157,8 @@ class Message(Base):
     )
     deleted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     is_edited: Mapped[bool] = mapped_column(Boolean, default=False)
+    forwarded_from_user_id = Column(UUID(as_uuid=True), nullable=True)
+    forwarded_from_nickname = Column(String(100), nullable=True)
 
     # Relationships
     chat = relationship("Chat", back_populates="messages")

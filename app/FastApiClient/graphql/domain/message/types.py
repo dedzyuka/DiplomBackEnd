@@ -49,3 +49,5 @@ class Message:
     statuses: List[MessageStatusInfo] = strawberry.field(default_factory=list)
     delivered_at: Optional[str] = None
     read_at: Optional[str] = None
+    forwarded_from_user_id: Optional[str] = None       # ДОБАВЛЕНО
+    forwarded_from_nickname: Optional[str] = None      # ДОБАВЛЕНО

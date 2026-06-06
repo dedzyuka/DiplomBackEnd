@@ -57,6 +57,7 @@ class MessageQueries:
         page_size: int = 50,
     ) -> List[Message]:
         access_token = info.context.require_access_token()
+        current_user_id = info.context.require_user_id()          # ДОБАВЛЕНО
         resp = await anyio.to_thread.run_sync(
             lambda: info.context.message_client.search_messages(
                 chat_id=chat_id,
@@ -66,4 +67,4 @@ class MessageQueries:
                 access_token=access_token,
             )
         )
-        return [from_grpc_message(msg) for msg in resp.messages]
+        return [from_grpc_message(msg, current_user_id) for msg in resp.messages] 

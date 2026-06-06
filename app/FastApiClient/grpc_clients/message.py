@@ -18,16 +18,18 @@ class MessageGrpcClient(BaseGrpcClient):
         return None
 
     def send_message(
-    self,
-    chat_id: str,
-    content: str,
-    sender_id: str,
-    reply_to_id: Optional[int] = None,
-    type: int = mess_pb2.TEXT,
-    attachments: Optional[List[dict]] = None,
-    mentions: Optional[List[str]] = None,
-    access_token: Optional[str] = None,
-) -> mess_pb2.Message:
+        self,
+        chat_id: str,
+        content: str,
+        sender_id: str,
+        reply_to_id: Optional[int] = None,
+        type: int = mess_pb2.TEXT,
+        attachments: Optional[List[dict]] = None,
+        mentions: Optional[List[str]] = None,
+        access_token: Optional[str] = None,
+        forwarded_from_user_id: Optional[str] = None,      # ДОБАВЛЕНО
+        forwarded_from_nickname: Optional[str] = None,    # ДОБАВЛЕНО
+    ) -> mess_pb2.Message:
         req_kwargs = {
             "chat_id": chat_id,
             "sender_id": sender_id,
@@ -36,11 +38,15 @@ class MessageGrpcClient(BaseGrpcClient):
         }
         if reply_to_id is not None:
             req_kwargs["reply_to_id"] = reply_to_id
+        if forwarded_from_user_id:                         # ДОБАВЛЕНО
+            req_kwargs["forwarded_from_user_id"] = forwarded_from_user_id
+        if forwarded_from_nickname:                       # ДОБАВЛЕНО
+            req_kwargs["forwarded_from_nickname"] = forwarded_from_nickname
         if attachments:
-            for att in attachments:
-                att_input = req_kwargs.setdefault("attachments", []).append(
-                    mess_pb2.AttachmentInput(attachment_id=att.get("attachment_id"))
-                )
+            req_kwargs["attachments"] = [
+                mess_pb2.AttachmentInput(attachment_id=att.get("attachment_id"))
+                for att in attachments
+            ]
         if mentions:
             req_kwargs["mentions"] = mentions
 

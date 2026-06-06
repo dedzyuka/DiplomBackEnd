@@ -36,4 +36,6 @@ def from_grpc_message(grpc_msg: mess_pb2.Message, current_user_id: str) -> Graph
         statuses=[],
         delivered_at=delivered_at,
         read_at=read_at,
+        forwarded_from_user_id=grpc_msg.forwarded_from_user_id if grpc_msg.HasField("forwarded_from_user_id") else None,  # ДОБАВЛЕНО
+        forwarded_from_nickname=grpc_msg.forwarded_from_nickname if grpc_msg.HasField("forwarded_from_nickname") else None,  # ДОБАВЛЕНО
     )

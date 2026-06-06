@@ -21,24 +21,12 @@ class MessageMutations:
         content: str,
         reply_to_id: Optional[int] = None,
         attachment_id: Optional[str] = None,
+        forwarded_from_user_id: Optional[str] = None,      # ДОБАВЛЕНО
+        forwarded_from_nickname: Optional[str] = None,    # ДОБАВЛЕНО
     ) -> Message:
         current_user_id = info.context.require_user_id()
         access_token = info.context.require_access_token()
 
-        grpc_request = mess_pb2.SendMessageRequest(
-            chat_id=chat_id,
-            sender_id=current_user_id,
-            content=content,
-            type=mess_pb2.TEXT,
-        )
-        if reply_to_id is not None:
-            grpc_request.reply_to_id = reply_to_id
-
-        attachments_list = []
-        if attachment_id:
-            att_input = mess_pb2.AttachmentInput()
-            att_input.attachment_id = attachment_id
-            attachments_list.append(att_input)
         grpc_msg = await anyio.to_thread.run_sync(
             lambda: info.context.message_client.send_message(
                 chat_id=chat_id,
@@ -47,6 +35,8 @@ class MessageMutations:
                 reply_to_id=reply_to_id,
                 access_token=access_token,
                 attachments=[{"attachment_id": attachment_id}] if attachment_id else None,
+                forwarded_from_user_id=forwarded_from_user_id,       # ДОБАВЛЕНО
+                forwarded_from_nickname=forwarded_from_nickname,     # ДОБАВЛЕНО
             )
         )
         return from_grpc_message(grpc_msg, current_user_id)

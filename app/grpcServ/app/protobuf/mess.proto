@@ -160,6 +160,8 @@ message Message {
   repeated Reaction reactions = 14;
   repeated Mention mentions = 15;
   repeated MessageStatus statuses = 16;
+  optional string forwarded_from_user_id = 17;    // UUID оригинального отправителя
+  optional string forwarded_from_nickname = 18;   // никнейм оригинального отправителя
 }
 
 message MessageStatus {
@@ -547,6 +549,8 @@ message SendMessageRequest {
   google.protobuf.Struct message_metadata = 7;
   repeated AttachmentInput attachments = 8;
   repeated string mentions = 9;   // user IDs
+  optional string forwarded_from_user_id = 10;
+  optional string forwarded_from_nickname = 11;
 }
 
 message GetMessageRequest {

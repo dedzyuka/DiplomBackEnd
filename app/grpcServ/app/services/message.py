@@ -30,7 +30,6 @@ PROTO_MESSAGE_TYPE_TO_DB = {
     mess_pb2.SYSTEM: "system",
 }
 
-# Обратный маппинг (строка -> protobuf enum)
 DB_MESSAGE_TYPE_TO_PROTO = {v: k for k, v in PROTO_MESSAGE_TYPE_TO_DB.items()}
 
 
@@ -55,6 +54,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
         if attachment.message_created_at:
             pb.message_created_at.CopyFrom(_dt_to_ts(attachment.message_created_at))
         return pb
+
     async def _require_current_user(self, context) -> uuid.UUID:
         return await require_current_user_uuid(context)
 
@@ -70,7 +70,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             message_id=msg.message_id,
             chat_id=str(msg.chat_id),
             sender_id=str(msg.sender_id),
-            type=DB_MESSAGE_TYPE_TO_PROTO.get(msg.type, mess_pb2.TEXT),   # преобразуем строку в enum
+            type=DB_MESSAGE_TYPE_TO_PROTO.get(msg.type, mess_pb2.TEXT),
             created_at=_dt_to_ts(msg.created_at),
             updated_at=_dt_to_ts(msg.updated_at),
             is_edited=msg.is_edited,
@@ -81,6 +81,10 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             pb.reply_to_id = msg.reply_to_id
         if msg.deleted_at:
             pb.deleted_at.CopyFrom(_dt_to_ts(msg.deleted_at))
+        if msg.forwarded_from_user_id:                     # ДОБАВЛЕНО
+            pb.forwarded_from_user_id = str(msg.forwarded_from_user_id)
+        if msg.forwarded_from_nickname:                    # ДОБАВЛЕНО
+            pb.forwarded_from_nickname = msg.forwarded_from_nickname
 
         if statuses:
             for s in statuses:
@@ -130,6 +134,9 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                 type=msg_type_str,
                 message_metadata=dict(request.message_metadata) if request.HasField("message_metadata") else None,
                 reply_to_id=request.reply_to_id if request.HasField("reply_to_id") else None,
+                # ДОБАВЛЕНО:
+                forwarded_from_user_id=request.forwarded_from_user_id if request.HasField("forwarded_from_user_id") else None,
+                forwarded_from_nickname=request.forwarded_from_nickname if request.HasField("forwarded_from_nickname") else None,
                 created_at=now,
                 updated_at=now,
             )
@@ -181,22 +188,21 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             )
             statuses = statuses_res.scalars().all()
 
-            # Создаём protobuf сообщение
             pb = self._message_to_proto(msg, statuses)
 
-            # Загружаем и добавляем вложения
+            # Вложения
             attachments_stmt = select(Attachment).where(Attachment.message_id == msg.message_id)
             attachments = (await session.execute(attachments_stmt)).scalars().all()
             for att in attachments:
                 pb.attachments.append(self._attachment_to_proto(att))
 
-            # Загружаем и добавляем реакции
+            # Реакции
             reactions_stmt = select(Reaction).where(Reaction.message_id == msg.message_id)
             reactions = (await session.execute(reactions_stmt)).scalars().all()
             for r in reactions:
                 pb.reactions.append(self._reaction_to_proto(r))
 
-            # Публикация в Redis
+            # Публикация в Redis (с добавлением forwarded полей)
             attachments_list = [
                 {
                     "attachment_id": str(att.attachment_id),
@@ -215,8 +221,10 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                     "sender_id": str(msg.sender_id),
                     "content": msg.content or "",
                     "created_at": msg.created_at.isoformat(),
-                    "reply_to_id": msg.reply_to_id if msg.reply_to_id else None,   # добавлено
+                    "reply_to_id": msg.reply_to_id if msg.reply_to_id else None,
                     "attachments": attachments_list,
+                    "forwarded_from_user_id": str(msg.forwarded_from_user_id) if msg.forwarded_from_user_id else None,   # ДОБАВЛЕНО
+                    "forwarded_from_nickname": msg.forwarded_from_nickname if msg.forwarded_from_nickname else None,      # ДОБАВЛЕНО
                 }
             }
             await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
