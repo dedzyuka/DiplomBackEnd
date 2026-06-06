@@ -41,11 +41,9 @@ class RedisClient:
         last_seen_at: datetime | None = None,
     ) -> None:
         session_key = self._session_key(session_id)
-
         now = datetime.now(timezone.utc)
         created_at = created_at or now
         last_seen_at = last_seen_at or now
-
         await self._redis.hset(
             session_key,
             mapping={
@@ -70,14 +68,12 @@ class RedisClient:
     async def get_user_sessions(self, user_id: str) -> list[dict[str, str]]:
         session_ids = await self._redis.smembers(self._user_sessions_key(user_id))
         result: list[dict[str, str]] = []
-
         for session_id in session_ids:
             data = await self.get_session_tokens(session_id)
             if not data:
                 continue
             data["session_id"] = session_id
             result.append(data)
-
         result.sort(key=lambda item: item.get("created_at", ""), reverse=True)
         return result
 
@@ -98,39 +94,45 @@ class RedisClient:
     async def delete_other_sessions(self, user_id: str, current_session_id: str) -> int:
         session_ids = await self._redis.smembers(self._user_sessions_key(user_id))
         removed = 0
-
         for session_id in session_ids:
             if session_id == current_session_id:
                 continue
             await self.delete_session(session_id)
             removed += 1
-
         return removed
+
     async def publish_event(self, channel: str, event_type: str, data: dict) -> None:
-        """Публикует событие в Redis канал."""
-        message = json.dumps({
-            "event": event_type,
-            "data": data
-        })
+        message = json.dumps({"event": event_type, "data": data})
         await self._redis.publish(channel, message)
 
     async def publish(self, channel: str, message: str) -> None:
         await self._redis.publish(channel, message)
-        
+
     async def set_invite_token(self, token: str, chat_id: str, ttl_seconds: int = 86400) -> None:
-        """Сохраняет invite токен → chat_id на заданное время (по умолчанию 24 часа)."""
         key = self._key("invite", token)
         await self._redis.setex(key, ttl_seconds, chat_id)
 
     async def get_invite_chat_id(self, token: str) -> Optional[str]:
-        """Возвращает chat_id по invite токену или None."""
         key = self._key("invite", token)
         return await self._redis.get(key)
 
     async def delete_invite_token(self, token: str) -> None:
-        """Удаляет invite токен (опционально)."""
         key = self._key("invite", token)
         await self._redis.delete(key)
+
+    # ========== НОВЫЕ МЕТОДЫ ДЛЯ ONLINE СТАТУСА ==========
+    async def add_online_user(self, user_id: str) -> None:
+        key = self._key("ws", "online_users")
+        await self._redis.sadd(key, user_id)
+
+    async def remove_online_user(self, user_id: str) -> None:
+        key = self._key("ws", "online_users")
+        await self._redis.srem(key, user_id)
+
+    async def is_user_online(self, user_id: str) -> bool:
+        key = self._key("ws", "online_users")
+        return bool(await self._redis.sismember(key, user_id))
+
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_PREFIX = os.getenv("REDIS_PREFIX", "messenger")

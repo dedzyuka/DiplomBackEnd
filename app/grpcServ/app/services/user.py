@@ -6,6 +6,7 @@ from google.protobuf.empty_pb2 import Empty
 from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 
+from services.redis_client import redis_client
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
 from security.NewPass import CreatePass
@@ -131,7 +132,11 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
             user = await session.get(User, user_uuid)
             if not user or user.status == DbAccountStatus.deleted:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "User not found")
-            return db_user_to_proto(user)
+
+            is_online = await redis_client.is_user_online(str(user.user_id))
+            proto_user = db_user_to_proto(user)
+            proto_user.is_online = is_online   # переопределяем
+            return proto_user
 
     async def UpdateUser(self, request, context):
         user_id = (request.user_id or "").strip()

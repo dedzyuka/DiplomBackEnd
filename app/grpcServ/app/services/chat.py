@@ -7,7 +7,6 @@ from google.protobuf.timestamp_pb2 import Timestamp
 from sqlalchemy import delete, select, func, update, desc
 from sqlalchemy.orm import selectinload
 
-
 from services.redis_client import redis_client
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
@@ -45,7 +44,7 @@ PROTO_STATUS_TO_DB = {
     mess_pb2.LEFT: DbMemberStatus.left,
     mess_pb2.BANNED: DbMemberStatus.banned,
 }
-# В начале файла после импортов
+
 DB_MESSAGE_TYPE_TO_PROTO = {
     "text": mess_pb2.TEXT,
     "image": mess_pb2.IMAGE,
@@ -98,13 +97,11 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             )
         ).scalar_one()
 
-        # Определяем join_policy
         if chat.is_public:
             join_policy = mess_pb2.JOIN_OPEN
         else:
             join_policy = mess_pb2.JOIN_INVITE_ONLY
 
-        # Создаём базовый объект Chat
         resp = mess_pb2.Chat(
             chat_id=str(chat.chat_id),
             chat_type=self._db_chat_type_to_proto(chat.chat_type),
@@ -118,7 +115,6 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             join_policy=join_policy,
         )
 
-        # Опциональные строковые поля
         if chat.name is not None:
             resp.name = chat.name
         if chat.description is not None:
@@ -128,7 +124,6 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
         if chat.creator_id is not None:
             resp.creator_id = str(chat.creator_id)
 
-        # my_role – роль текущего пользователя (всегда устанавливаем)
         if current_user_id:
             actor = await self._get_actor_member(session, chat.chat_id, current_user_id)
             if actor:
@@ -138,17 +133,14 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
         else:
             resp.my_role = mess_pb2.MEMBER_ROLE_UNSPECIFIED
 
-        # Предпросмотр последнего сообщения
         if current_user_id:
             preview = await self._get_last_message_preview(session, chat.chat_id)
             if preview:
                 resp.last_message_preview.CopyFrom(preview)
 
         return resp
-        
+
     async def _get_last_message_preview(self, session, chat_id: uuid.UUID) -> Optional[mess_pb2.MessagePreview]:
-        """Возвращает MessagePreview для последнего не удалённого сообщения в чате."""
-        print(f"🔍 Getting last message preview for chat {chat_id}")
         stmt = (
             select(Message)
             .where(Message.chat_id == chat_id, Message.deleted_at.is_(None))
@@ -159,12 +151,10 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
         if not last_msg:
             return None
 
-        # Текстовое превью
         text_preview = None
         if last_msg.content and last_msg.content.strip():
             text_preview = last_msg.content
         else:
-            # Если есть вложения
             att_stmt = select(Attachment).where(Attachment.message_id == last_msg.message_id)
             attachments = (await session.execute(att_stmt)).scalars().all()
             if attachments:
@@ -183,7 +173,6 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             else:
                 text_preview = ""
 
-
         msg_type_enum = DB_MESSAGE_TYPE_TO_PROTO.get(last_msg.type, mess_pb2.TEXT)
 
         preview = mess_pb2.MessagePreview(
@@ -195,9 +184,8 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
         )
         if text_preview:
             preview.text_preview = text_preview
-        print(f"✅ Preview created: {preview}")
         return preview
-    
+
     async def _build_member_proto(self, session, member: ChatMember) -> mess_pb2.ChatMember:
         resp = mess_pb2.ChatMember(
             chat_id=str(member.chat_id),
@@ -230,9 +218,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             )
         return resp
 
-    async def _get_actor_member(
-        self, session, chat_id: uuid.UUID, user_id: uuid.UUID
-    ) -> ChatMember | None:
+    async def _get_actor_member(self, session, chat_id: uuid.UUID, user_id: uuid.UUID) -> ChatMember | None:
         return (
             await session.execute(
                 select(ChatMember).where(
@@ -242,9 +228,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             )
         ).scalar_one_or_none()
 
-    async def CreateChat(
-        self, request: mess_pb2.CreateChatRequest, context
-    ) -> mess_pb2.Chat:
+    async def CreateChat(self, request: mess_pb2.CreateChatRequest, context) -> mess_pb2.Chat:
         creator_uuid = await self._require_current_user_uuid(context)
 
         if request.chat_type == mess_pb2.CHAT_TYPE_UNSPECIFIED:
@@ -480,9 +464,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Access denied")
             return await self._build_chat_proto(session, chat)
 
-    async def UpdateChat(
-        self, request: mess_pb2.UpdateChatRequest, context
-    ) -> mess_pb2.Chat:
+    async def UpdateChat(self, request: mess_pb2.UpdateChatRequest, context) -> mess_pb2.Chat:
         current_user_uuid = await self._require_current_user_uuid(context)
         try:
             chat_uuid = uuid.UUID(request.chat_id)
@@ -561,9 +543,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             await session.commit()
             return Empty()
 
-    async def ListChats(
-        self, request: mess_pb2.ListChatsRequest, context
-    ) -> mess_pb2.ChatsListResponse:
+    async def ListChats(self, request: mess_pb2.ListChatsRequest, context) -> mess_pb2.ChatsListResponse:
         current_user_uuid = await self._require_current_user_uuid(context)
         try:
             requested_user = uuid.UUID(request.user_id)
@@ -603,7 +583,6 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 )
             ).scalars().all()
 
-            # Передаём current_user_uuid в _build_chat_proto
             chats = [await self._build_chat_proto(session, c, current_user_uuid) for c in rows]
 
             next_page = str(offset + page_size) if offset + page_size < total else ""
@@ -613,9 +592,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 total_count=total,
             )
 
-    async def AddChatMember(
-        self, request: mess_pb2.AddChatMemberRequest, context
-    ) -> mess_pb2.ChatMember:
+    async def AddChatMember(self, request: mess_pb2.AddChatMemberRequest, context) -> mess_pb2.ChatMember:
         actor_id = await self._require_current_user_uuid(context)
         try:
             chat_uuid = uuid.UUID(request.chat_id)
@@ -668,7 +645,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 )
             ).scalar_one_or_none()
 
-            now = datetime.datetime.now(datetime.timezone.utc)
+            now = datetime.now(timezone.utc)
             if member:
                 if member.status == DbMemberStatus.active:
                     await context.abort(grpc.StatusCode.ALREADY_EXISTS, "User is already a member")
@@ -697,9 +674,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             await session.refresh(member)
             return await self._build_member_proto(session, member)
 
-    async def UpdateChatMember(
-        self, request: mess_pb2.UpdateChatMemberRequest, context
-    ) -> mess_pb2.ChatMember:
+    async def UpdateChatMember(self, request: mess_pb2.UpdateChatMemberRequest, context) -> mess_pb2.ChatMember:
         actor_id = await self._require_current_user_uuid(context)
         try:
             chat_uuid = uuid.UUID(request.chat_id)
@@ -745,23 +720,19 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                     await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "Cannot change owner status")
                 member.status = new_status
                 if new_status == DbMemberStatus.left:
-                    member.left_at = datetime.datetime.now(datetime.timezone.utc)
+                    member.left_at = datetime.now(timezone.utc)
                 elif new_status == DbMemberStatus.active:
                     member.left_at = None
                     member.banned_until = None
 
             if request.HasField("banned_until"):
-                member.banned_until = request.banned_until.ToDatetime().astimezone(
-                    datetime.timezone.utc
-                )
+                member.banned_until = request.banned_until.ToDatetime().astimezone(timezone.utc)
 
             await session.commit()
             await session.refresh(member)
             return await self._build_member_proto(session, member)
 
-    async def RemoveChatMember(
-        self, request: mess_pb2.RemoveChatMemberRequest, context
-    ) -> Empty:
+    async def RemoveChatMember(self, request: mess_pb2.RemoveChatMemberRequest, context) -> Empty:
         actor_id = await self._require_current_user_uuid(context)
         try:
             chat_uuid = uuid.UUID(request.chat_id)
@@ -792,14 +763,12 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "Cannot remove OWNER")
 
             member.status = DbMemberStatus.left
-            member.left_at = datetime.datetime.now(datetime.timezone.utc)
+            member.left_at = datetime.now(timezone.utc)
             member.banned_until = None
             await session.commit()
             return Empty()
 
-    async def ListChatMembers(
-        self, request: mess_pb2.ListChatMembersRequest, context
-    ) -> mess_pb2.ChatMembersListResponse:
+    async def ListChatMembers(self, request: mess_pb2.ListChatMembersRequest, context) -> mess_pb2.ChatMembersListResponse:
         actor_id = await self._require_current_user_uuid(context)
         try:
             chat_uuid = uuid.UUID(request.chat_id)
@@ -842,118 +811,23 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 total_count=total,
             )
 
-    async def ListChatsV2(
-        self, request: mess_pb2.ListChatsRequestV2, context
-    ) -> mess_pb2.ChatsListResponseV2:
-        legacy_response = await self.ListChats(
-            mess_pb2.ListChatsRequest(
-                user_id=request.user_id,
-                page_size=request.page_size,
-                page_token=request.page_token,
-            ),
-            context,
-        )
-        chats = []
-        for c in legacy_response.chats:
-            summary = mess_pb2.ChatSummary(
-                chat_id=c.chat_id,
-                chat_type=c.chat_type,
-                title=c.name if c.HasField("name") else f"Chat {c.chat_id[:8]}",
-                visibility=c.visibility,
-                join_policy=c.join_policy,
-                members_count=c.members_count,
-                last_activity_at=c.last_activity_at,
-                my_role=mess_pb2.MEMBER,
-                is_muted=False,
-                is_archived=False,
-            )
-            if c.HasField("avatar_url"):
-                summary.avatar_url = c.avatar_url
-            if request.include_last_message and c.HasField("last_message_preview"):
-                summary.last_message.CopyFrom(c.last_message_preview)
-            if request.include_counters:
-                summary.counters.unread_count = 0
-                summary.counters.has_mentions = False
-            chats.append(summary)
-
-        return mess_pb2.ChatsListResponseV2(
-            chats=chats,
-            next_page_token=legacy_response.next_page_token,
-            total_count=legacy_response.total_count,
-        )
-
-    async def BatchGetChats(
-        self, request: mess_pb2.BatchGetChatsRequest, context
-    ) -> mess_pb2.BatchGetChatsResponse:
-        current_user_uuid = await self._require_current_user_uuid(context)
-        chat_ids = []
-        for cid in request.chat_ids:
-            try:
-                chat_ids.append(uuid.UUID(cid))
-            except Exception:
-                continue
-
-        async with AsyncSessionLocal() as session:
-            rows = (
-                await session.execute(
-                    select(Chat)
-                    .join(ChatMember, ChatMember.chat_id == Chat.chat_id)
-                    .where(
-                        Chat.chat_id.in_(chat_ids),
-                        ChatMember.user_id == current_user_uuid,
-                        ChatMember.status == DbMemberStatus.active,
-                    )
-                )
-            ).scalars().all()
-
-            chats = []
-            for c in rows:
-                count = (
-                    await session.execute(
-                        select(func.count()).select_from(ChatMember).where(
-                            ChatMember.chat_id == c.chat_id,
-                            ChatMember.status == DbMemberStatus.active,
-                        )
-                    )
-                ).scalar_one()
-                title = c.name or f"Chat {str(c.chat_id)[:8]}"
-                summary = mess_pb2.ChatSummary(
-                    chat_id=str(c.chat_id),
-                    chat_type=self._db_chat_type_to_proto(c.chat_type),
-                    title=title,
-                    visibility=mess_pb2.VISIBILITY_PUBLIC if c.is_public else mess_pb2.VISIBILITY_PRIVATE,
-                    join_policy=mess_pb2.JOIN_OPEN if c.is_public else mess_pb2.JOIN_INVITE_ONLY,
-                    members_count=int(count),
-                    last_activity_at=_dt_to_ts(c.created_at),
-                    my_role=mess_pb2.MEMBER,
-                    is_muted=False,
-                    is_archived=False,
-                )
-                if c.avatar_url:
-                    summary.avatar_url = c.avatar_url
-                chats.append(summary)
-            return mess_pb2.BatchGetChatsResponse(chats=chats)
-
     async def JoinChat(self, request: mess_pb2.JoinChatRequest, context) -> mess_pb2.ChatMember:
         current_user_uuid = await self._require_current_user_uuid(context)
 
         chat_uuid = None
-        target_user_uuid = current_user_uuid   # по умолчанию
+        target_user_uuid = current_user_uuid
 
-        # Определяем chat_id: если передан invite_token, получаем chat_id из Redis
         if request.HasField("invite_token") and request.invite_token.strip():
             invite_token = request.invite_token.strip()
             chat_id_from_invite = await redis_client.get_invite_chat_id(invite_token)
             if not chat_id_from_invite:
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Invalid or expired invite token")
             chat_uuid = uuid.UUID(chat_id_from_invite)
-            # Проверяем, что переданный user_id (если есть) совпадает с текущим
             if request.user_id and request.user_id.strip():
                 requested_user = uuid.UUID(request.user_id)
                 if requested_user != current_user_uuid:
                     await context.abort(grpc.StatusCode.PERMISSION_DENIED, "User mismatch")
         else:
-            # Старый путь: ожидаем chat_id и user_id в запросе
             try:
                 chat_uuid = uuid.UUID(request.chat_id)
                 target_user_uuid = uuid.UUID(request.user_id)
@@ -967,14 +841,12 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Chat identifier missing")
 
         async with AsyncSessionLocal() as session:
-            # Проверяем существование чата
             chat = (await session.execute(select(Chat).where(Chat.chat_id == chat_uuid))).scalar_one_or_none()
             if not chat:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Chat not found")
             if chat.chat_type == DbChatType.private:
                 await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "Cannot join PRIVATE chat")
 
-            # Проверяем, не забанен ли пользователь
             member = (await session.execute(
                 select(ChatMember).where(
                     ChatMember.chat_id == chat_uuid,
@@ -986,10 +858,8 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             if member and member.status == DbMemberStatus.banned and (member.banned_until is None or member.banned_until > now):
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "User is banned")
             if member and member.status == DbMemberStatus.active:
-                # Уже активный участник
                 return await self._build_member_proto(session, member)
 
-            # Проверяем лимит участников
             active_count = (await session.execute(
                 select(func.count()).select_from(ChatMember).where(
                     ChatMember.chat_id == chat_uuid,
@@ -1000,7 +870,6 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "max_members exceeded")
 
             if member:
-                # Восстанавливаем участника
                 member.status = DbMemberStatus.active
                 member.left_at = None
                 member.banned_until = None
@@ -1060,7 +929,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                     )
 
             member.status = DbMemberStatus.left
-            member.left_at = datetime.datetime.now(datetime.timezone.utc)
+            member.left_at = datetime.now(timezone.utc)
             await session.commit()
             return Empty()
 
@@ -1095,7 +964,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                 await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "Cannot kick owner")
 
             member.status = DbMemberStatus.left
-            member.left_at = datetime.datetime.now(datetime.timezone.utc)
+            member.left_at = datetime.now(timezone.utc)
             await session.commit()
             return Empty()
 
@@ -1131,10 +1000,8 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
 
             banned_until = None
             if request.HasField("banned_until"):
-                banned_until = request.banned_until.ToDatetime().astimezone(
-                    datetime.timezone.utc
-                )
-                if banned_until <= datetime.datetime.now(datetime.timezone.utc):
+                banned_until = request.banned_until.ToDatetime().astimezone(timezone.utc)
+                if banned_until <= datetime.now(timezone.utc):
                     await context.abort(
                         grpc.StatusCode.INVALID_ARGUMENT,
                         "banned_until must be in the future",
@@ -1142,7 +1009,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
 
             member.status = DbMemberStatus.banned
             member.banned_until = banned_until
-            member.left_at = datetime.datetime.now(datetime.timezone.utc)
+            member.left_at = datetime.now(timezone.utc)
             await session.commit()
             return Empty()
 
@@ -1181,7 +1048,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
             member.left_at = None
             await session.commit()
             return Empty()
-        
+
     async def GenerateInviteLink(self, request: mess_pb2.GenerateInviteLinkRequest, context):
         current_user_uuid = await self._require_current_user_uuid(context)
         chat_uuid = uuid.UUID(request.chat_id)
@@ -1197,7 +1064,7 @@ class ChatServicer(mess_pb2_grpc.ChatServiceServicer):
                     await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Only owner or admin can generate invite link")
 
             token = str(uuid.uuid4())
-            ttl = 60 * 60 * 24  # 24 часа
+            ttl = 60 * 60 * 24
             await redis_client.set_invite_token(token, str(chat_uuid), ttl)
 
             expire_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
