@@ -94,6 +94,10 @@ def from_grpc_attachment(grpc_attachment) -> GraphQLAttachment:
         mime_type=grpc_attachment.mime_type if grpc_attachment.HasField("mime_type") else None,
         storage_path=grpc_attachment.storage_path,
         uploaded_at=_ts_to_iso(grpc_attachment.uploaded_at),
+        duration=grpc_attachment.duration if grpc_attachment.HasField("duration") else None,
+        waveform=grpc_attachment.waveform if grpc_attachment.HasField("waveform") else None,
+        thumbnail_url=grpc_attachment.thumbnail_url if grpc_attachment.HasField("thumbnail_url") else None,
+        is_circular=grpc_attachment.is_circular if grpc_attachment.HasField("is_circular") else None,
     )
 
 

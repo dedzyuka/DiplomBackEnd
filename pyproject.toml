@@ -22,6 +22,7 @@ dependencies = [
     "minio>=7.2.20",
     "python-multipart>=0.0.29",
     "httpx>=0.28.1",
+    "ffmpeg>=1.4",
 ]
 
 [tool.uv.workspace]

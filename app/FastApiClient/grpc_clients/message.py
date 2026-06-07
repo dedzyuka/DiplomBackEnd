@@ -28,7 +28,8 @@ class MessageGrpcClient(BaseGrpcClient):
         mentions: Optional[List[str]] = None,
         access_token: Optional[str] = None,
         forwarded_from_user_id: Optional[str] = None,      # ДОБАВЛЕНО
-        forwarded_from_nickname: Optional[str] = None,    # ДОБАВЛЕНО
+        forwarded_from_nickname: Optional[str] = None,
+        is_circular: Optional[bool] = None,    # ДОБАВЛЕНО
     ) -> mess_pb2.Message:
         req_kwargs = {
             "chat_id": chat_id,
@@ -38,10 +39,12 @@ class MessageGrpcClient(BaseGrpcClient):
         }
         if reply_to_id is not None:
             req_kwargs["reply_to_id"] = reply_to_id
-        if forwarded_from_user_id:                         # ДОБАВЛЕНО
+        if forwarded_from_user_id:
             req_kwargs["forwarded_from_user_id"] = forwarded_from_user_id
-        if forwarded_from_nickname:                       # ДОБАВЛЕНО
+        if forwarded_from_nickname:
             req_kwargs["forwarded_from_nickname"] = forwarded_from_nickname
+        if is_circular is not None:
+            req_kwargs["is_circular"] = is_circular
         if attachments:
             req_kwargs["attachments"] = [
                 mess_pb2.AttachmentInput(attachment_id=att.get("attachment_id"))

@@ -53,6 +53,17 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             pb.uploaded_at.CopyFrom(_dt_to_ts(attachment.uploaded_at))
         if attachment.message_created_at:
             pb.message_created_at.CopyFrom(_dt_to_ts(attachment.message_created_at))
+
+        # ДОБАВИТЬ ЭТИ СТРОКИ:
+        if attachment.duration is not None:
+            pb.duration = attachment.duration
+        if attachment.waveform:
+            pb.waveform = attachment.waveform
+        if attachment.thumbnail_url:
+            pb.thumbnail_url = attachment.thumbnail_url
+        if attachment.is_circular is not None:
+            pb.is_circular = attachment.is_circular
+
         return pb
 
     async def _require_current_user(self, context) -> uuid.UUID:
@@ -142,7 +153,6 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             session.add(msg)
             await session.flush()
 
-            # --- ОБРАБОТКА ВЛОЖЕНИЙ (исправленная) ---
             for att in request.attachments:
                 if att.HasField("attachment_id"):
                     att_id = uuid.UUID(att.attachment_id)
@@ -167,8 +177,17 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                             mime_type=original.mime_type,
                             storage_path=original.storage_path,
                             uploaded_at=datetime.now(timezone.utc),
+                            is_circular=original.is_circular,   # ДОБАВЛЕНО
                         )
                         session.add(new_attachment)
+
+            # --- УСТАНОВКА IS_CIRCULAR ИЗ ЗАПРОСА ---
+            if request.HasField("is_circular") and request.is_circular:
+                stmt_attachments = select(Attachment).where(Attachment.message_id == msg.message_id)
+                attachments_to_update = (await session.execute(stmt_attachments)).scalars().all()
+                for att in attachments_to_update:
+                    att.is_circular = request.is_circular
+                    session.add(att)
 
             # Статусы доставки для всех участников (кроме отправителя)
             members_stmt = select(ChatMember.user_id).where(
@@ -226,9 +245,14 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                     "file_size": att.file_size,
                     "mime_type": att.mime_type,
                     "storage_path": att.storage_path,
+                    "duration": att.duration,
+                    "waveform": att.waveform,
+                    "thumbnail_url": att.thumbnail_url,
+                    "is_circular": att.is_circular,   # ← ЭТА СТРОКА КЛЮЧЕВАЯ
                 }
                 for att in attachments
             ]
+
             event_data = {
                 "event": "message.new",
                 "payload": {

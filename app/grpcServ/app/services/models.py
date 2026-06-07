@@ -221,6 +221,10 @@ class Attachment(Base):
     uploaded_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()")
     )
+    duration = Column(Integer, nullable=True)
+    waveform = Column(Text, nullable=True)
+    thumbnail_url = Column(Text, nullable=True)
+    is_circular = Column(Boolean, default=False)
 
     # Relationships
     message = relationship("Message", back_populates="attachments")

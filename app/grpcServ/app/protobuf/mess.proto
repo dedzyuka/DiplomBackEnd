@@ -181,6 +181,10 @@ message Attachment {
   optional string mime_type = 6;
   string storage_path = 7;
   google.protobuf.Timestamp uploaded_at = 8;
+  optional int32 duration = 9;          // длительность в секундах
+  optional string waveform = 10;        // base64 JSON массива амплитуд
+  optional string thumbnail_url = 11;   // путь к превью (для видео)
+  optional bool is_circular = 12;       // true для кружков
 }
 
 message Reaction {
@@ -537,6 +541,7 @@ message AttachmentInput {
   optional int64 file_size = 3;
   optional string mime_type = 4;
   string storage_path = 5;
+  optional bool is_circular = 6; 
 }
 
 message SendMessageRequest {
@@ -551,6 +556,7 @@ message SendMessageRequest {
   repeated string mentions = 9;   // user IDs
   optional string forwarded_from_user_id = 10;
   optional string forwarded_from_nickname = 11;
+  optional bool is_circular = 12; 
 }
 
 message GetMessageRequest {

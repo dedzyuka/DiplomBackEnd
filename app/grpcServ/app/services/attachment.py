@@ -1,3 +1,8 @@
+import base64
+import json
+import os
+import tempfile
+import ffmpeg
 import uuid
 import asyncio
 from datetime import datetime, timezone
@@ -16,7 +21,7 @@ minio_client = MinioClient()
 
 class AttachmentServicer(mess_pb2_grpc.AttachmentServiceServicer):
     async def UploadAttachment(self, request_iterator, context):
-        # Получаем текущего пользователя (для аудита, но не обязателен)
+        # Получаем текущего пользователя
         user_id = await require_current_user_uuid(context)
         metadata = None
         chunks = []
@@ -28,12 +33,10 @@ class AttachmentServicer(mess_pb2_grpc.AttachmentServiceServicer):
         if not metadata:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Missing metadata")
 
-        # Проверка размера (5 MB)
         total_size = sum(len(chunk) for chunk in chunks)
         if total_size > 5 * 1024 * 1024:
             await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "File too large (max 5MB)")
 
-        # ✅ Генерируем ОДИН UUID для attachment_id и имени файла
         attachment_id = uuid.uuid4()
         ext = metadata.file_name.split('.')[-1] if '.' in metadata.file_name else ''
         object_name = f"attachments/{attachment_id}.{ext}" if ext else f"attachments/{attachment_id}"
@@ -46,17 +49,55 @@ class AttachmentServicer(mess_pb2_grpc.AttachmentServiceServicer):
         except Exception as e:
             await context.abort(grpc.StatusCode.INTERNAL, f"Failed to upload: {e}")
 
+        # Извлечение метаданных для аудио/видео
+        duration = None
+        waveform = None
+        thumbnail_url = None
+        is_circular = metadata.is_circular if metadata.HasField("is_circular") else False
+
+        if content_type.startswith('audio/') or content_type.startswith('video/'):
+            with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                tmp.write(file_bytes)
+                tmp_path = tmp.name
+            try:
+                # длительность
+                probe = ffmpeg.probe(tmp_path)
+                duration = int(float(probe['format']['duration']))
+                
+                if content_type.startswith('video/'):
+                    # извлечь thumbnail (первый кадр на 1 секунде)
+                    thumb_path = tmp_path + '_thumb.jpg'
+                    ffmpeg.input(tmp_path, ss=1).output(thumb_path, vframes=1).run()
+                    with open(thumb_path, 'rb') as f:
+                        thumb_data = f.read()
+                    thumb_object_name = f"thumbnails/{attachment_id}.jpg"
+                    await minio_client.upload_file(thumb_data, thumb_object_name, 'image/jpeg')
+                    thumbnail_url = thumb_object_name
+                    # по умолчанию видео не кружок, клиент установит is_circular в метаданных сообщения
+                elif content_type.startswith('audio/'):
+                    # упрощённый waveform: 100 случайных амплитуд (для MVP)
+                    # в реальном проекте вычислить через ffmpeg showwaves
+                    import random
+                    amplitudes = [random.randint(20, 100) for _ in range(100)]
+                    waveform = base64.b64encode(json.dumps(amplitudes).encode()).decode()
+            finally:
+                os.unlink(tmp_path)
+
         # Сохраняем в БД
         async with AsyncSessionLocal() as session:
             attachment = Attachment(
                 attachment_id=attachment_id,
-                message_id=None,  # временно, будет обновлено при привязке к сообщению
+                message_id=None,
                 message_created_at=datetime.now(timezone.utc),
                 file_name=metadata.file_name,
                 file_size=total_size,
                 mime_type=content_type,
                 storage_path=object_name,
-                uploaded_at=datetime.now(timezone.utc)
+                uploaded_at=datetime.now(timezone.utc),
+                duration=duration,
+                waveform=waveform,
+                thumbnail_url=thumbnail_url,
+                is_circular=is_circular
             )
             session.add(attachment)
             await session.commit()

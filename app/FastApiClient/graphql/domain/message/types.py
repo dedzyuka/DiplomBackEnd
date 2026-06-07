@@ -9,6 +9,10 @@ class Attachment:
     mime_type: Optional[str] = None
     storage_path: str
     uploaded_at: str
+    duration: Optional[int] = None
+    waveform: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    is_circular: Optional[bool] = None
 
 @strawberry.type
 class Reaction:

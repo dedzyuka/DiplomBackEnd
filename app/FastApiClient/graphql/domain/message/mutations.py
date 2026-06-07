@@ -22,7 +22,8 @@ class MessageMutations:
         reply_to_id: Optional[int] = None,
         attachment_id: Optional[str] = None,
         forwarded_from_user_id: Optional[str] = None,      # ДОБАВЛЕНО
-        forwarded_from_nickname: Optional[str] = None,    # ДОБАВЛЕНО
+        forwarded_from_nickname: Optional[str] = None,
+        is_circular: Optional[bool] = None,
     ) -> Message:
         current_user_id = info.context.require_user_id()
         access_token = info.context.require_access_token()
@@ -35,8 +36,9 @@ class MessageMutations:
                 reply_to_id=reply_to_id,
                 access_token=access_token,
                 attachments=[{"attachment_id": attachment_id}] if attachment_id else None,
-                forwarded_from_user_id=forwarded_from_user_id,       # ДОБАВЛЕНО
-                forwarded_from_nickname=forwarded_from_nickname,     # ДОБАВЛЕНО
+                forwarded_from_user_id=forwarded_from_user_id,
+                forwarded_from_nickname=forwarded_from_nickname,
+                is_circular=is_circular,   # передать
             )
         )
         return from_grpc_message(grpc_msg, current_user_id)
