@@ -10,13 +10,13 @@ from typing import Optional
 import grpc
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from config import settings
 from database import AsyncSessionLocal
 from enums import MemberStatus as DbMemberStatus
 from manager import manager
-from models import ChatMember
+from models import ChatMember, User
 from protobuf import mess_pb2, mess_pb2_grpc
 from redis_c import OfflineMessage, RedisClient
 from session_auth import verify_access_session
@@ -26,9 +26,22 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ws")
+_last_seen_cache = {} 
 
 HEARTBEAT_TIMEOUT = 60
 
+async def update_user_last_seen(user_id: uuid.UUID, force: bool = False) -> None:
+    """Обновляет last_seen пользователя в БД, но не чаще раза в 30 секунд."""
+    now = datetime.now(timezone.utc)
+    last = _last_seen_cache.get(user_id)
+    if not force and last and (now - last).total_seconds() < 30:
+        return
+    _last_seen_cache[user_id] = now
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            update(User).where(User.user_id == user_id).values(last_seen=now)
+        )
+        await session.commit()
 # ---------- Pydantic модели ----------
 class MessageAckPayload(BaseModel):
     message_id: int
@@ -187,6 +200,7 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
 
     # 3. Принимаем соединение и регистрируем в менеджере
     connection = await manager.connect(websocket, str(current_user_id))
+    await update_user_last_seen(current_user_id, force=True)
 
     # 4. Добавляем пользователя в онлайн-множество Redis
     try:
@@ -233,6 +247,7 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
         # 8. Основной цикл обработки сообщений от клиента
         while True:
             raw = await websocket.receive_json()
+            await update_user_last_seen(current_user_id)
             try:
                 envelope = ClientEnvelope.model_validate(raw)
             except ValidationError as exc:
@@ -346,6 +361,7 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
         heartbeat_task.cancel()
         await manager.disconnect(connection)
         # Удаляем пользователя из онлайн-множества
+        await update_user_last_seen(current_user_id, force=True)
         try:
             await redis_client.remove_online_user(str(current_user_id))
             await redis_client.publish(

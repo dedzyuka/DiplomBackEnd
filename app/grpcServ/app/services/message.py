@@ -134,7 +134,6 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                 type=msg_type_str,
                 message_metadata=dict(request.message_metadata) if request.HasField("message_metadata") else None,
                 reply_to_id=request.reply_to_id if request.HasField("reply_to_id") else None,
-                # ДОБАВЛЕНО:
                 forwarded_from_user_id=request.forwarded_from_user_id if request.HasField("forwarded_from_user_id") else None,
                 forwarded_from_nickname=request.forwarded_from_nickname if request.HasField("forwarded_from_nickname") else None,
                 created_at=now,
@@ -143,7 +142,35 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             session.add(msg)
             await session.flush()
 
-            # Статусы для всех участников
+            # --- ОБРАБОТКА ВЛОЖЕНИЙ (исправленная) ---
+            for att in request.attachments:
+                if att.HasField("attachment_id"):
+                    att_id = uuid.UUID(att.attachment_id)
+                    stmt = select(Attachment).where(Attachment.attachment_id == att_id)
+                    original = (await session.execute(stmt)).scalar_one_or_none()
+                    if not original:
+                        continue
+
+                    # Если вложение ещё не привязано к сообщению → это новое вложение
+                    if original.message_id is None:
+                        original.message_id = msg.message_id
+                        original.message_created_at = msg.created_at
+                        session.add(original)
+                    else:
+                        # Пересылаемое вложение – создаём копию
+                        new_attachment = Attachment(
+                            attachment_id=uuid.uuid4(),
+                            message_id=msg.message_id,
+                            message_created_at=msg.created_at,
+                            file_name=original.file_name,
+                            file_size=original.file_size,
+                            mime_type=original.mime_type,
+                            storage_path=original.storage_path,
+                            uploaded_at=datetime.now(timezone.utc),
+                        )
+                        session.add(new_attachment)
+
+            # Статусы доставки для всех участников (кроме отправителя)
             members_stmt = select(ChatMember.user_id).where(
                 ChatMember.chat_id == chat_uuid,
                 ChatMember.status == MemberStatus.active
@@ -159,20 +186,9 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                 )
                 session.add(status)
 
-            # Привязка вложений
-            for att in request.attachments:
-                if att.HasField("attachment_id"):
-                    attachment_id = uuid.UUID(att.attachment_id)
-                    stmt = select(Attachment).where(Attachment.attachment_id == attachment_id)
-                    attachment = (await session.execute(stmt)).scalar_one_or_none()
-                    if attachment:
-                        attachment.message_id = msg.message_id
-                        attachment.message_created_at = msg.created_at
-                        session.add(attachment)
-
             await session.commit()
 
-            # Обновляем updated_at чата (последняя активность)
+            # Обновляем updated_at чата
             await session.execute(
                 update(Chat)
                 .where(Chat.chat_id == chat_uuid)
@@ -190,19 +206,19 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
 
             pb = self._message_to_proto(msg, statuses)
 
-            # Вложения
+            # Загружаем вложения (включая только что созданные)
             attachments_stmt = select(Attachment).where(Attachment.message_id == msg.message_id)
             attachments = (await session.execute(attachments_stmt)).scalars().all()
             for att in attachments:
                 pb.attachments.append(self._attachment_to_proto(att))
 
-            # Реакции
+            # Загружаем реакции (пока пустые)
             reactions_stmt = select(Reaction).where(Reaction.message_id == msg.message_id)
             reactions = (await session.execute(reactions_stmt)).scalars().all()
             for r in reactions:
                 pb.reactions.append(self._reaction_to_proto(r))
 
-            # Публикация в Redis (с добавлением forwarded полей)
+            # Публикация события в Redis
             attachments_list = [
                 {
                     "attachment_id": str(att.attachment_id),
@@ -223,8 +239,8 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                     "created_at": msg.created_at.isoformat(),
                     "reply_to_id": msg.reply_to_id if msg.reply_to_id else None,
                     "attachments": attachments_list,
-                    "forwarded_from_user_id": str(msg.forwarded_from_user_id) if msg.forwarded_from_user_id else None,   # ДОБАВЛЕНО
-                    "forwarded_from_nickname": msg.forwarded_from_nickname if msg.forwarded_from_nickname else None,      # ДОБАВЛЕНО
+                    "forwarded_from_user_id": str(msg.forwarded_from_user_id) if msg.forwarded_from_user_id else None,
+                    "forwarded_from_nickname": msg.forwarded_from_nickname if msg.forwarded_from_nickname else None,
                 }
             }
             await redis_client.publish(settings.REDIS_EVENTS_CHANNEL, json.dumps(event_data))
