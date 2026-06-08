@@ -11,6 +11,7 @@ from google.protobuf.empty_pb2 import Empty
 from google.protobuf.timestamp_pb2 import Timestamp
 from sqlalchemy import select, func
 
+from services.chat import _dt_to_ts
 from core.config import settings
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
@@ -18,7 +19,8 @@ from services.access_session import require_current_user_uuid
 from services.models import Call, CallParticipant, ChatMember, DeviceToken
 from services.enums import MemberStatus
 from services.redis_client import redis_client
-
+from livekit import api
+from sqlalchemy.exc import IntegrityError
 
 class CallServicer(mess_pb2_grpc.CallServiceServicer):
     # ---------- LiveKit HTTP API helpers (Basic Auth) ----------
@@ -64,22 +66,16 @@ class CallServicer(mess_pb2_grpc.CallServiceServicer):
                     print(f"Warning: delete room failed: {text}")
 
     async def _generate_participant_token(self, room_name: str, user_id: str) -> tuple[str, str]:
-        now = int(time.time())
-        exp = now + 3600
-        payload = {
-            "iss": settings.LIVEKIT_API_KEY,
-            "exp": exp,
-            "nbf": now,
-            "name": user_id,
-            "video": {
-                "room": room_name,
-                "can_publish": True,
-                "can_subscribe": True,
-            },
-        }
-        token = jwt.encode(payload, settings.LIVEKIT_API_SECRET, algorithm="HS256")
-        ws_url = settings.LIVEKIT_WS_URL or f"ws://{settings.LIVEKIT_URL.split('://')[-1]}"
-        return token, ws_url
+        token = api.AccessToken(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET) \
+            .with_identity(user_id) \
+            .with_name(user_id) \
+            .with_grants(api.VideoGrants(
+                room_join=True,
+                room=room_name,
+                can_publish=True,
+                can_subscribe=True,
+            )).to_jwt()
+        return token, settings.LIVEKIT_WS_URL
 
     # ---------- Database & notifications ----------
     async def _get_chat_member_ids(self, session, chat_id: uuid.UUID) -> list[uuid.UUID]:
@@ -179,26 +175,52 @@ class CallServicer(mess_pb2_grpc.CallServiceServicer):
 
         async with AsyncSessionLocal() as session:
             call = await session.get(Call, call_uuid)
-            if not call or call.status != "pending":
-                await context.abort(grpc.StatusCode.NOT_FOUND, "Call not found or not pending")
+            if not call:
+                await context.abort(grpc.StatusCode.NOT_FOUND, "Call not found")
+            if call.status != "pending":
+                await context.abort(grpc.StatusCode.FAILED_PRECONDITION, "Call already accepted or ended")
 
-            call.status = "active"
-            call.updated_at = datetime.now(timezone.utc)
-
-            participant = CallParticipant(
-                call_id=call.call_id,
-                user_id=user_uuid,
-                joined_at=datetime.now(timezone.utc)
+            # Проверка членства в чате
+            member_stmt = select(ChatMember).where(
+                ChatMember.chat_id == call.chat_id,
+                ChatMember.user_id == user_uuid,
+                ChatMember.status == MemberStatus.active
             )
-            session.add(participant)
+            if not (await session.execute(member_stmt)).scalar_one_or_none():
+                await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Not a member")
+
+            # Добавляем участника звонка, если ещё не добавлен
+            participant_stmt = select(CallParticipant).where(
+                CallParticipant.call_id == call_uuid,
+                CallParticipant.user_id == user_uuid
+            )
+            participant = (await session.execute(participant_stmt)).scalar_one_or_none()
+            if not participant:
+                participant = CallParticipant(
+                    call_id=call_uuid,
+                    user_id=user_uuid,
+                    joined_at=datetime.now(timezone.utc)
+                )
+                session.add(participant)
+                try:
+                    await session.commit()
+                except IntegrityError:
+                    await session.rollback()
+
+            # Обновляем статус звонка
+            call.status = "active"
             await session.commit()
 
-            await self._notify_call_update(str(call_uuid), "call.updated", {
-                "status": "active",
-                "accepted_by": str(user_uuid)
-            })
-
-            return self._call_to_proto(call)
+            # Возвращаем полную информацию о звонке
+            return mess_pb2.CallInfo(
+                call_id=str(call.call_id),
+                chat_id=str(call.chat_id),
+                initiator_id=str(call.initiator_id),
+                status=call.status,
+                type=call.type,
+                started_at=_dt_to_ts(call.started_at),
+                # ended_at не заполняем, так как звонок ещё активен
+            )
 
     async def RejectCall(self, request, context):
         user_uuid = await require_current_user_uuid(context)
@@ -291,6 +313,7 @@ class CallServicer(mess_pb2_grpc.CallServiceServicer):
             if not call:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Call not found")
 
+            # Проверка членства в чате
             member_stmt = select(ChatMember).where(
                 ChatMember.chat_id == call.chat_id,
                 ChatMember.user_id == user_uuid,
@@ -299,18 +322,26 @@ class CallServicer(mess_pb2_grpc.CallServiceServicer):
             if not (await session.execute(member_stmt)).scalar_one_or_none():
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Not a member")
 
+            # Добавляем участника звонка, если ещё не добавлен
             participant_stmt = select(CallParticipant).where(
                 CallParticipant.call_id == call_uuid,
                 CallParticipant.user_id == user_uuid
             )
-            if not (await session.execute(participant_stmt)).scalar_one_or_none():
+            participant = (await session.execute(participant_stmt)).scalar_one_or_none()
+            if not participant:
                 participant = CallParticipant(
                     call_id=call_uuid,
                     user_id=user_uuid,
                     joined_at=datetime.now(timezone.utc)
                 )
                 session.add(participant)
-                await session.commit()
+                try:
+                    await session.commit()
+                except IntegrityError:
+                    # Если дубликат (например, из-за параллельного запроса), игнорируем
+                    await session.rollback()
+                    # Запись уже существует, ничего не делаем
+            # Если участник уже был, просто продолжаем
 
             token, ws_url = await self._generate_participant_token(call.livekit_room_name, str(user_uuid))
             return mess_pb2.LiveKitTokenResponse(token=token, ws_url=ws_url)

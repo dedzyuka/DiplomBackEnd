@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import grpc
@@ -20,8 +20,7 @@ from models import ChatMember, User
 from protobuf import mess_pb2, mess_pb2_grpc
 from redis_c import OfflineMessage, RedisClient
 from session_auth import verify_access_session
-from functools import lru_cache
-from datetime import datetime, timedelta
+from anyio import to_thread
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +30,6 @@ _last_seen_cache = {}
 HEARTBEAT_TIMEOUT = 60
 
 async def update_user_last_seen(user_id: uuid.UUID, force: bool = False) -> None:
-    """Обновляет last_seen пользователя в БД, но не чаще раза в 30 секунд."""
     now = datetime.now(timezone.utc)
     last = _last_seen_cache.get(user_id)
     if not force and last and (now - last).total_seconds() < 30:
@@ -42,7 +40,7 @@ async def update_user_last_seen(user_id: uuid.UUID, force: bool = False) -> None
             update(User).where(User.user_id == user_id).values(last_seen=now)
         )
         await session.commit()
-# ---------- Pydantic модели ----------
+
 class MessageAckPayload(BaseModel):
     message_id: int
     chat_id: str
@@ -64,7 +62,6 @@ class ClientEnvelope(BaseModel):
 
 _chat_members_cache = {}
 _cache_ttl = timedelta(seconds=5)
-
 
 async def _get_chat_member_ids(chat_id: uuid.UUID) -> list[str]:
     now = datetime.now(timezone.utc)
@@ -128,25 +125,20 @@ async def handle_redis_event(app, raw_data: str):
         payload = data.get("payload", {})
         chat_id = payload.get("chat_id")
 
-        # Событие изменения онлайн-статуса пользователя (без chat_id)
         if event_type == "user.online":
             user_id = payload.get("user_id")
             if user_id:
-                # Отправляем только тому пользователю, чей статус изменился
                 await manager.send_to_user(user_id, {"event": event_type, "payload": payload})
             return
 
-        # Для событий с chat_id – рассылка участникам чата
         if not chat_id:
             logger.warning("Redis event without chat_id: %s", data)
             return
         chat_uuid = uuid.UUID(chat_id)
         members = await _get_chat_member_ids(chat_uuid)
-        logger.info(f"📢 Event '{event_type}' for chat {chat_id}, members: {members}")
         redis_client: RedisClient = app.state.redis_client
         for user_id in members:
             is_online = await redis_client.is_user_online(user_id)
-            logger.debug(f"User {user_id} online: {is_online}")
             if is_online:
                 await manager.send_to_user(user_id, {"event": event_type, "payload": payload})
             else:
@@ -160,19 +152,14 @@ async def handle_redis_event(app, raw_data: str):
     except Exception as e:
         logger.error(f"Failed to process redis event: {e}", exc_info=True)
 
-
-# ---------- WebSocket эндпоинт ----------
 @router.websocket("/chat")
 @router.websocket("/chat/{requested_user_id}")
 async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optional[str] = None):
-    # 1. Проверка origin
     if not await _validate_origin(websocket):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    # 2. Извлечение user_id из токена
     current_user_id_raw = await _resolve_user_id_from_token(websocket)
-    logger.info(f"Websocket connection attempt for user {current_user_id_raw}")
     if not current_user_id_raw:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Missing or invalid access token")
         return
@@ -194,24 +181,19 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
 
     redis_client: RedisClient = websocket.app.state.redis_client
     if redis_client is None:
-        logger.error("Redis client not initialized")
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason="Internal server error")
         return
 
-    # 3. Принимаем соединение и регистрируем в менеджере
     connection = await manager.connect(websocket, str(current_user_id))
     await update_user_last_seen(current_user_id, force=True)
 
-    # 4. Добавляем пользователя в онлайн-множество Redis
     try:
         await redis_client.add_online_user(str(current_user_id))
-        logger.info(f"✅ User {current_user_id} marked online in Redis")
     except Exception as e:
         logger.error(f"Failed to add online user: {e}", exc_info=True)
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
         return
 
-    # 5. Публикуем событие "пользователь онлайн"
     await redis_client.publish(
         "messenger:events",
         json.dumps({
@@ -220,16 +202,13 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
         })
     )
 
-    # 6. Отправляем накопившиеся offline-сообщения (если есть)
     try:
         offline_messages = await redis_client.dequeue_all_offline_messages(str(current_user_id))
         for msg in offline_messages:
             await websocket.send_json({"event": msg.event_type, "payload": msg.payload})
     except Exception as e:
         logger.error(f"Failed to process offline messages: {e}", exc_info=True)
-        # Не закрываем соединение, продолжаем
 
-    # 7. Heartbeat (проверка ping/pong)
     last_ping_time = datetime.now(timezone.utc)
 
     async def heartbeat_checker():
@@ -244,7 +223,6 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
     heartbeat_task = asyncio.create_task(heartbeat_checker())
 
     try:
-        # 8. Основной цикл обработки сообщений от клиента
         while True:
             raw = await websocket.receive_json()
             await update_user_last_seen(current_user_id)
@@ -254,13 +232,11 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                 await websocket.send_json({"event": "error", "detail": exc.errors()})
                 continue
 
-            # --- Ping ---
             if envelope.event == "ping":
                 last_ping_time = datetime.now(timezone.utc)
                 await websocket.send_json({"event": "pong", "server_time": last_ping_time.isoformat()})
                 continue
 
-            # --- Typing start / stop ---
             if envelope.event in {"typing.start", "typing.stop"}:
                 try:
                     payload = TypingPayload.model_validate(envelope.payload or {})
@@ -288,7 +264,6 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                 )
                 continue
 
-            # --- Отправка сообщения ---
             if envelope.event == "message.send":
                 try:
                     payload = MessageSendPayload.model_validate(envelope.payload or {})
@@ -303,7 +278,6 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
 
                 stub: mess_pb2_grpc.MessageServiceStub = websocket.app.state.message_stub
                 metadata = (("authorization", f"Bearer {access_token}"),)
-
                 grpc_request = mess_pb2.SendMessageRequest(
                     chat_id=str(chat_uuid),
                     sender_id=str(current_user_id),
@@ -314,13 +288,10 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                     grpc_request.reply_to_id = payload.reply_to_id
 
                 try:
-                    loop = asyncio.get_running_loop()
-                    grpc_response = await loop.run_in_executor(
-                        None,
+                    # Используем anyio.to_thread.run_sync
+                    grpc_response = await to_thread.run_sync(
                         lambda: stub.SendMessage(grpc_request, timeout=5, metadata=metadata)
                     )
-                    # Опционально: подтверждение клиенту
-                    # await websocket.send_json({"event": "message.sent", "payload": {"message_id": grpc_response.message_id}})
                 except grpc.RpcError as e:
                     await websocket.send_json({
                         "event": "error",
@@ -328,7 +299,6 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                     })
                 continue
 
-            # --- Подтверждение доставки (ack) ---
             if envelope.event == "message.ack":
                 try:
                     payload = MessageAckPayload.model_validate(envelope.payload or {})
@@ -338,17 +308,15 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                         message_id=payload.message_id,
                         chat_id=payload.chat_id,
                     )
-                    loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(
-                        None,
+                    await to_thread.run_sync(
                         lambda: stub.MarkAsDelivered(grpc_request, timeout=5, metadata=metadata)
                     )
                 except Exception as e:
                     logger.error(f"Failed to process message.ack: {e}")
                 continue
 
+            # --- Call events ---
             if envelope.event == "call.start":
-            # Проксируем в gRPC CallService
                 try:
                     payload = envelope.payload or {}
                     chat_id = payload.get("chat_id")
@@ -359,7 +327,9 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                     stub: mess_pb2_grpc.CallServiceStub = websocket.app.state.call_stub
                     metadata = (("authorization", f"Bearer {access_token}"),)
                     grpc_req = mess_pb2.StartCallRequest(chat_id=chat_id, type=call_type)
-                    resp = await loop.run_in_executor(None, lambda: stub.StartCall(grpc_req, metadata=metadata))
+                    resp = await to_thread.run_sync(
+                        lambda: stub.StartCall(grpc_req, metadata=metadata)
+                    )
                     await websocket.send_json({
                         "event": "call.started",
                         "payload": {
@@ -381,11 +351,23 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                     stub = websocket.app.state.call_stub
                     metadata = (("authorization", f"Bearer {access_token}"),)
                     grpc_req = mess_pb2.AcceptCallRequest(call_id=call_id)
-                    resp = await loop.run_in_executor(None, lambda: stub.AcceptCall(grpc_req, metadata=metadata))
+                    resp = await to_thread.run_sync(
+                        lambda: stub.AcceptCall(grpc_req, metadata=metadata)
+                    )
                     await websocket.send_json({
                         "event": "call.accepted",
-                        "payload": {"call_id": call_id, "token": getattr(resp, "token", None), "ws_url": getattr(resp, "ws_url", None)}
+                        "payload": {
+                            "call_id": resp.call_id,
+                            "token": getattr(resp, "token", None),
+                            "ws_url": getattr(resp, "ws_url", None)
+                        }
                     })
+                except grpc.RpcError as e:
+                    # Если звонок уже принят или завершён – не считаем ошибкой, просто игнорируем
+                    if e.code() == grpc.StatusCode.FAILED_PRECONDITION:
+                        logger.info(f"Call already accepted or ended: {e.details()}")
+                    else:
+                        await websocket.send_json({"event": "error", "detail": str(e)})
                 except Exception as e:
                     await websocket.send_json({"event": "error", "detail": str(e)})
                 continue
@@ -398,7 +380,9 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                     stub = websocket.app.state.call_stub
                     metadata = (("authorization", f"Bearer {access_token}"),)
                     grpc_req = mess_pb2.RejectCallRequest(call_id=call_id)
-                    await loop.run_in_executor(None, lambda: stub.RejectCall(grpc_req, metadata=metadata))
+                    await to_thread.run_sync(
+                        lambda: stub.RejectCall(grpc_req, metadata=metadata)
+                    )
                 except Exception as e:
                     logger.error(f"Call reject error: {e}")
                 continue
@@ -411,12 +395,13 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                     stub = websocket.app.state.call_stub
                     metadata = (("authorization", f"Bearer {access_token}"),)
                     grpc_req = mess_pb2.EndCallRequest(call_id=call_id)
-                    await loop.run_in_executor(None, lambda: stub.EndCall(grpc_req, metadata=metadata))
+                    await to_thread.run_sync(
+                        lambda: stub.EndCall(grpc_req, metadata=metadata)
+                    )
                 except Exception as e:
                     logger.error(f"Call end error: {e}")
                 continue
 
-            # --- Неизвестное событие ---
             await websocket.send_json({
                 "event": "error",
                 "detail": f"Unknown event: {envelope.event}",
@@ -429,7 +414,6 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
     finally:
         heartbeat_task.cancel()
         await manager.disconnect(connection)
-        # Удаляем пользователя из онлайн-множества
         await update_user_last_seen(current_user_id, force=True)
         try:
             await redis_client.remove_online_user(str(current_user_id))
@@ -440,6 +424,5 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                     "payload": {"user_id": str(current_user_id), "is_online": False}
                 })
             )
-            logger.info(f"User {current_user_id} removed from online set")
         except Exception as e:
             logger.error(f"Failed to remove online user: {e}", exc_info=True)
