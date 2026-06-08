@@ -4,7 +4,9 @@ from .auth import AuthGrpcClient
 from .message import MessageGrpcClient
 from .contact import ContactGrpcClient
 from .attachment import AttachmentGrpcClient
+from .call import CallGrpcClient
 
+call_client = CallGrpcClient()
 message_client = MessageGrpcClient()
 user_client = UserGrpcClient()
 auth_client = AuthGrpcClient()

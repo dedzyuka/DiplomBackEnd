@@ -16,6 +16,13 @@ class Settings(BaseSettings):
     MINIO_SECURE: bool = False
     MINIO_BUCKET: str = "messenger"
 
+    # Добавленные поля для видеозвонков:
+    LIVEKIT_URL: str = "http://localhost:7880"
+    LIVEKIT_WS_URL: str = "ws://localhost:7880"
+    LIVEKIT_API_KEY: str = "api-key"
+    LIVEKIT_API_SECRET: str = "mysecretkey123456789012345678901234"
+    CALL_GRPC_SERVER: str = "localhost:50057"   # если используется
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

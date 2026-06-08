@@ -702,6 +702,69 @@ message InviteLink {
     string invite_key = 1;
     google.protobuf.Timestamp expire_at = 2;
 }
+message StartCallRequest {
+  string chat_id = 1;
+  string type = 2;  // "audio" or "video"
+  string caller_device_id = 3;
+}
+
+message AcceptCallRequest {
+  string call_id = 1;
+  string callee_device_id = 2;
+}
+
+message RejectCallRequest {
+  string call_id = 1;
+}
+
+message EndCallRequest {
+  string call_id = 1;
+}
+
+message GetCallRequest {
+  string call_id = 1;
+}
+
+message ListCallsRequest {
+  string chat_id = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+}
+
+message CallsListResponse {
+  repeated CallInfo calls = 1;
+  int32 total_count = 2;
+}
+
+message CallInfo {
+  string call_id = 1;
+  string chat_id = 2;
+  string initiator_id = 3;
+  string status = 4;   // pending, active, missed, completed, declined
+  string type = 5;     // audio, video
+  google.protobuf.Timestamp started_at = 6;
+  optional google.protobuf.Timestamp ended_at = 7;
+}
+
+message LiveKitTokenRequest {
+  string call_id = 1;
+  string user_id = 2;
+}
+
+message LiveKitTokenResponse {
+  string token = 1;
+  string ws_url = 2;
+}
+
+service CallService {
+  rpc StartCall(StartCallRequest) returns (CallInfo);
+  rpc AcceptCall(AcceptCallRequest) returns (CallInfo);
+  rpc RejectCall(RejectCallRequest) returns (google.protobuf.Empty);
+  rpc EndCall(EndCallRequest) returns (google.protobuf.Empty);
+  rpc GetCall(GetCallRequest) returns (CallInfo);
+  rpc ListCalls(ListCallsRequest) returns (CallsListResponse);
+  rpc GetLiveKitToken(LiveKitTokenRequest) returns (LiveKitTokenResponse);
+}
 
 service UserService {
   rpc CreateUser(CreateUserRequest) returns (User);

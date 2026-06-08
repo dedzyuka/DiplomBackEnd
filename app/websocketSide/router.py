@@ -347,6 +347,75 @@ async def websocket_chat_endpoint(websocket: WebSocket, requested_user_id: Optio
                     logger.error(f"Failed to process message.ack: {e}")
                 continue
 
+            if envelope.event == "call.start":
+            # Проксируем в gRPC CallService
+                try:
+                    payload = envelope.payload or {}
+                    chat_id = payload.get("chat_id")
+                    call_type = payload.get("type", "video")
+                    if not chat_id:
+                        await websocket.send_json({"event": "error", "detail": "chat_id required"})
+                        continue
+                    stub: mess_pb2_grpc.CallServiceStub = websocket.app.state.call_stub
+                    metadata = (("authorization", f"Bearer {access_token}"),)
+                    grpc_req = mess_pb2.StartCallRequest(chat_id=chat_id, type=call_type)
+                    resp = await loop.run_in_executor(None, lambda: stub.StartCall(grpc_req, metadata=metadata))
+                    await websocket.send_json({
+                        "event": "call.started",
+                        "payload": {
+                            "call_id": resp.call_id,
+                            "token": getattr(resp, "token", None),
+                            "ws_url": getattr(resp, "ws_url", None)
+                        }
+                    })
+                except Exception as e:
+                    await websocket.send_json({"event": "error", "detail": str(e)})
+                continue
+
+            if envelope.event == "call.accept":
+                try:
+                    call_id = envelope.payload.get("call_id")
+                    if not call_id:
+                        await websocket.send_json({"event": "error", "detail": "call_id required"})
+                        continue
+                    stub = websocket.app.state.call_stub
+                    metadata = (("authorization", f"Bearer {access_token}"),)
+                    grpc_req = mess_pb2.AcceptCallRequest(call_id=call_id)
+                    resp = await loop.run_in_executor(None, lambda: stub.AcceptCall(grpc_req, metadata=metadata))
+                    await websocket.send_json({
+                        "event": "call.accepted",
+                        "payload": {"call_id": call_id, "token": getattr(resp, "token", None), "ws_url": getattr(resp, "ws_url", None)}
+                    })
+                except Exception as e:
+                    await websocket.send_json({"event": "error", "detail": str(e)})
+                continue
+
+            if envelope.event == "call.reject":
+                try:
+                    call_id = envelope.payload.get("call_id")
+                    if not call_id:
+                        continue
+                    stub = websocket.app.state.call_stub
+                    metadata = (("authorization", f"Bearer {access_token}"),)
+                    grpc_req = mess_pb2.RejectCallRequest(call_id=call_id)
+                    await loop.run_in_executor(None, lambda: stub.RejectCall(grpc_req, metadata=metadata))
+                except Exception as e:
+                    logger.error(f"Call reject error: {e}")
+                continue
+
+            if envelope.event == "call.end":
+                try:
+                    call_id = envelope.payload.get("call_id")
+                    if not call_id:
+                        continue
+                    stub = websocket.app.state.call_stub
+                    metadata = (("authorization", f"Bearer {access_token}"),)
+                    grpc_req = mess_pb2.EndCallRequest(call_id=call_id)
+                    await loop.run_in_executor(None, lambda: stub.EndCall(grpc_req, metadata=metadata))
+                except Exception as e:
+                    logger.error(f"Call end error: {e}")
+                continue
+
             # --- Неизвестное событие ---
             await websocket.send_json({
                 "event": "error",

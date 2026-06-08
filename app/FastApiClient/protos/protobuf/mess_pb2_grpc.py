@@ -26,6 +26,336 @@ if _version_not_supported:
     )
 
 
+class CallServiceStub(object):
+    """Missing associated documentation comment in .proto file."""
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.StartCall = channel.unary_unary(
+                '/messenger.CallService/StartCall',
+                request_serializer=mess__pb2.StartCallRequest.SerializeToString,
+                response_deserializer=mess__pb2.CallInfo.FromString,
+                _registered_method=True)
+        self.AcceptCall = channel.unary_unary(
+                '/messenger.CallService/AcceptCall',
+                request_serializer=mess__pb2.AcceptCallRequest.SerializeToString,
+                response_deserializer=mess__pb2.CallInfo.FromString,
+                _registered_method=True)
+        self.RejectCall = channel.unary_unary(
+                '/messenger.CallService/RejectCall',
+                request_serializer=mess__pb2.RejectCallRequest.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                _registered_method=True)
+        self.EndCall = channel.unary_unary(
+                '/messenger.CallService/EndCall',
+                request_serializer=mess__pb2.EndCallRequest.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+                _registered_method=True)
+        self.GetCall = channel.unary_unary(
+                '/messenger.CallService/GetCall',
+                request_serializer=mess__pb2.GetCallRequest.SerializeToString,
+                response_deserializer=mess__pb2.CallInfo.FromString,
+                _registered_method=True)
+        self.ListCalls = channel.unary_unary(
+                '/messenger.CallService/ListCalls',
+                request_serializer=mess__pb2.ListCallsRequest.SerializeToString,
+                response_deserializer=mess__pb2.CallsListResponse.FromString,
+                _registered_method=True)
+        self.GetLiveKitToken = channel.unary_unary(
+                '/messenger.CallService/GetLiveKitToken',
+                request_serializer=mess__pb2.LiveKitTokenRequest.SerializeToString,
+                response_deserializer=mess__pb2.LiveKitTokenResponse.FromString,
+                _registered_method=True)
+
+
+class CallServiceServicer(object):
+    """Missing associated documentation comment in .proto file."""
+
+    def StartCall(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AcceptCall(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RejectCall(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def EndCall(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetCall(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListCalls(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetLiveKitToken(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_CallServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'StartCall': grpc.unary_unary_rpc_method_handler(
+                    servicer.StartCall,
+                    request_deserializer=mess__pb2.StartCallRequest.FromString,
+                    response_serializer=mess__pb2.CallInfo.SerializeToString,
+            ),
+            'AcceptCall': grpc.unary_unary_rpc_method_handler(
+                    servicer.AcceptCall,
+                    request_deserializer=mess__pb2.AcceptCallRequest.FromString,
+                    response_serializer=mess__pb2.CallInfo.SerializeToString,
+            ),
+            'RejectCall': grpc.unary_unary_rpc_method_handler(
+                    servicer.RejectCall,
+                    request_deserializer=mess__pb2.RejectCallRequest.FromString,
+                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            ),
+            'EndCall': grpc.unary_unary_rpc_method_handler(
+                    servicer.EndCall,
+                    request_deserializer=mess__pb2.EndCallRequest.FromString,
+                    response_serializer=google_dot_protobuf_dot_empty__pb2.Empty.SerializeToString,
+            ),
+            'GetCall': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetCall,
+                    request_deserializer=mess__pb2.GetCallRequest.FromString,
+                    response_serializer=mess__pb2.CallInfo.SerializeToString,
+            ),
+            'ListCalls': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListCalls,
+                    request_deserializer=mess__pb2.ListCallsRequest.FromString,
+                    response_serializer=mess__pb2.CallsListResponse.SerializeToString,
+            ),
+            'GetLiveKitToken': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetLiveKitToken,
+                    request_deserializer=mess__pb2.LiveKitTokenRequest.FromString,
+                    response_serializer=mess__pb2.LiveKitTokenResponse.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'messenger.CallService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('messenger.CallService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class CallService(object):
+    """Missing associated documentation comment in .proto file."""
+
+    @staticmethod
+    def StartCall(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.CallService/StartCall',
+            mess__pb2.StartCallRequest.SerializeToString,
+            mess__pb2.CallInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AcceptCall(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.CallService/AcceptCall',
+            mess__pb2.AcceptCallRequest.SerializeToString,
+            mess__pb2.CallInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RejectCall(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.CallService/RejectCall',
+            mess__pb2.RejectCallRequest.SerializeToString,
+            google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def EndCall(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.CallService/EndCall',
+            mess__pb2.EndCallRequest.SerializeToString,
+            google_dot_protobuf_dot_empty__pb2.Empty.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetCall(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.CallService/GetCall',
+            mess__pb2.GetCallRequest.SerializeToString,
+            mess__pb2.CallInfo.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListCalls(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.CallService/ListCalls',
+            mess__pb2.ListCallsRequest.SerializeToString,
+            mess__pb2.CallsListResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetLiveKitToken(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/messenger.CallService/GetLiveKitToken',
+            mess__pb2.LiveKitTokenRequest.SerializeToString,
+            mess__pb2.LiveKitTokenResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+
 class UserServiceStub(object):
     """Missing associated documentation comment in .proto file."""
 

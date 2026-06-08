@@ -30,6 +30,9 @@ async def lifespan(app: FastAPI):
     # gRPC канал для MessageService
     channel = grpc.insecure_channel(settings.CHAT_GRPC_SERVER)
     message_stub = mess_pb2_grpc.MessageServiceStub(channel)
+    call_channel = grpc.insecure_channel(settings.CALL_GRPC_SERVER)  # например localhost:50057
+    call_stub = mess_pb2_grpc.CallServiceStub(call_channel)
+    app.state.call_stub = call_stub
     app.state.message_stub = message_stub
     if redis_client is None or redis_client.client is None:
         logger.error("Redis client not initialized")

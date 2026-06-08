@@ -21,6 +21,7 @@ from strawberry.fastapi import GraphQLRouter
 from FastApiClient.graphql.schema import schema
 from FastApiClient.graphql.context import get_context
 from FastApiClient.api.endpoints import upload
+from FastApiClient.api.endpoints.push import router as push_router
 import httpx
 from fastapi import Response
 
@@ -36,6 +37,7 @@ graphql_app = GraphQLRouter(
 
 app.include_router(graphql_app, prefix="/graphql")
 app.include_router(upload.router)
+app.include_router(push_router)
 
 @app.get("/")
 async def root():

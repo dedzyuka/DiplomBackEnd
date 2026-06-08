@@ -4,6 +4,8 @@ from strawberry.fastapi import BaseContext
 from FastApiClient.core.session_auth import verify_access_session
 from FastApiClient.grpc_clients import auth_client, user_client, chat_client, message_client, contact_client
 from FastApiClient.core.redis_client import redis_client as global_redis_client
+from FastApiClient.grpc_clients import call_client
+
 
 class GraphQLContext(BaseContext):
     def __init__(
@@ -18,6 +20,7 @@ class GraphQLContext(BaseContext):
         access_token: Optional[str] = None,
         is_access_token_verified: bool = False,
         redis_client=None,
+        call_client = None
     ):
         self.request = request
         self.user_client = user_client
@@ -30,6 +33,7 @@ class GraphQLContext(BaseContext):
         self.access_token = access_token
         self.is_access_token_verified = is_access_token_verified
         self.redis_client = redis_client or global_redis_client
+        self.call_client = call_client
 
 
     def require_access_token(self) -> str:
@@ -113,4 +117,5 @@ async def get_context(request: Request) -> GraphQLContext:
         access_token=verified_access_token,
         is_access_token_verified=is_access_token_verified,
         redis_client=global_redis_client,   # передаём
+        call_client=call_client,
     )

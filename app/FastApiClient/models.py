@@ -91,13 +91,14 @@ class Chat(Base):
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)
     max_members: Mapped[int] = mapped_column(Integer, default=200)
 
-
     # Relationships
     creator = relationship("User", back_populates="owned_chats")
     members = relationship("ChatMember", back_populates="chat")
     messages = relationship("Message", back_populates="chat")
+    calls = relationship("Call", back_populates="chat")
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"), onupdate=text("now()"))
+    
 
 
 # ---------- Chat Members ----------
@@ -161,6 +162,8 @@ class Message(Base):
     )
     deleted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     is_edited: Mapped[bool] = mapped_column(Boolean, default=False)
+    forwarded_from_user_id = Column(UUID(as_uuid=True), nullable=True)
+    forwarded_from_nickname = Column(String(100), nullable=True)
 
     # Relationships
     chat = relationship("Chat", back_populates="messages")
@@ -223,6 +226,10 @@ class Attachment(Base):
     uploaded_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=text("now()")
     )
+    duration = Column(Integer, nullable=True)
+    waveform = Column(Text, nullable=True)
+    thumbnail_url = Column(Text, nullable=True)
+    is_circular = Column(Boolean, default=False)
 
     # Relationships
     message = relationship("Message", back_populates="attachments")
@@ -400,3 +407,63 @@ class Emoji(Base):
     name: Mapped[str | None] = mapped_column(Text)
     category: Mapped[str | None] = mapped_column(Text)
     keywords: Mapped[list[str] | None] = mapped_column(JSONB)  # массив строк
+
+class Call(Base):
+    __tablename__ = "calls"
+
+    call_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True,
+        server_default=text("gen_random_uuid()")
+    )
+    chat_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chats.chat_id", ondelete="CASCADE"), nullable=False
+    )
+    initiator_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()")
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    status: Mapped[str] = mapped_column(String(20), nullable=False)   # pending, active, missed, completed, declined
+    type: Mapped[str] = mapped_column(String(10), nullable=False)     # audio, video
+    livekit_room_name: Mapped[str | None] = mapped_column(Text)
+
+    # Relationships
+    chat = relationship("Chat", back_populates="calls")
+    initiator = relationship("User", foreign_keys=[initiator_id])
+    participants = relationship("CallParticipant", back_populates="call")
+
+# Участники звонка (для групповых звонков – post-MVP, но заложим сразу)
+class CallParticipant(Base):
+    __tablename__ = "call_participants"
+    __table_args__ = (
+        PrimaryKeyConstraint("call_id", "user_id"),
+    )
+
+    call_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("calls.call_id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), primary_key=True
+    )
+    joined_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    left_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+
+    call = relationship("Call", back_populates="participants")
+    user = relationship("User")
+
+# ---------- Push устройства (для уведомлений) ----------
+class DeviceToken(Base):
+    __tablename__ = "device_tokens"
+
+    token_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False
+    )
+    device_type: Mapped[str] = mapped_column(String(20), nullable=False)  # ios, android
+    device_token: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("now()"), onupdate=text("now()"))
+
+    user = relationship("User")
