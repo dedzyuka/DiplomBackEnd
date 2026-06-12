@@ -75,7 +75,8 @@ class CallServicer(mess_pb2_grpc.CallServiceServicer):
                 can_publish=True,
                 can_subscribe=True,
             )).to_jwt()
-        return token, settings.LIVEKIT_WS_URL
+        ws_url = settings.LIVEKIT_WS_URL
+        return token, ws_url
 
     # ---------- Database & notifications ----------
     async def _get_chat_member_ids(self, session, chat_id: uuid.UUID) -> list[uuid.UUID]:
@@ -87,6 +88,8 @@ class CallServicer(mess_pb2_grpc.CallServiceServicer):
         return list(res.scalars().all())
 
     async def _notify_call_update(self, call_id: str, event: str, payload: dict):
+        print(f"🔔 Sending {event} for call {call_id} payload {payload}")
+
         async with AsyncSessionLocal() as session:
             call = await session.get(Call, uuid.UUID(call_id))
             if not call:
@@ -211,6 +214,15 @@ class CallServicer(mess_pb2_grpc.CallServiceServicer):
             call.status = "active"
             await session.commit()
 
+            await self._notify_call_update(
+                        str(call_uuid),
+                        "call.updated",
+                        {
+                            "status": call.status,
+                            "chat_id": str(call.chat_id)   # <-- обязательно
+                        }
+                    )
+
             # Возвращаем полную информацию о звонке
             return mess_pb2.CallInfo(
                 call_id=str(call.call_id),
@@ -252,7 +264,14 @@ class CallServicer(mess_pb2_grpc.CallServiceServicer):
             call.ended_at = datetime.now(timezone.utc)
             await session.commit()
 
-            await self._notify_call_update(str(call_uuid), "call.ended", {"reason": call.status})
+            await self._notify_call_update(
+                str(call_uuid),
+                "call.ended",
+                {
+                    "reason": call.status,
+                    "chat_id": str(call.chat_id)   # <-- добавить
+                }
+            )
             await self._delete_room(call.livekit_room_name)
 
         return Empty()
@@ -307,13 +326,13 @@ class CallServicer(mess_pb2_grpc.CallServiceServicer):
     async def GetLiveKitToken(self, request, context):
         user_uuid = await require_current_user_uuid(context)
         call_uuid = uuid.UUID(request.call_id)
-
+        
         async with AsyncSessionLocal() as session:
             call = await session.get(Call, call_uuid)
             if not call:
                 await context.abort(grpc.StatusCode.NOT_FOUND, "Call not found")
-
-            # Проверка членства в чате
+            
+            # Проверка членства
             member_stmt = select(ChatMember).where(
                 ChatMember.chat_id == call.chat_id,
                 ChatMember.user_id == user_uuid,
@@ -321,8 +340,8 @@ class CallServicer(mess_pb2_grpc.CallServiceServicer):
             )
             if not (await session.execute(member_stmt)).scalar_one_or_none():
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Not a member")
-
-            # Добавляем участника звонка, если ещё не добавлен
+            
+            # Добавляем участника звонка
             participant_stmt = select(CallParticipant).where(
                 CallParticipant.call_id == call_uuid,
                 CallParticipant.user_id == user_uuid
@@ -338,13 +357,14 @@ class CallServicer(mess_pb2_grpc.CallServiceServicer):
                 try:
                     await session.commit()
                 except IntegrityError:
-                    # Если дубликат (например, из-за параллельного запроса), игнорируем
                     await session.rollback()
-                    # Запись уже существует, ничего не делаем
-            # Если участник уже был, просто продолжаем
-
-            token, ws_url = await self._generate_participant_token(call.livekit_room_name, str(user_uuid))
-            return mess_pb2.LiveKitTokenResponse(token=token, ws_url=ws_url)
+        
+        token, ws_url = await self._generate_participant_token(call.livekit_room_name, str(user_uuid))
+        # Гарантируем, что ws_url не None
+        if not ws_url:
+            ws_url = settings.LIVEKIT_WS_URL or "ws://localhost:7880"
+        
+        return mess_pb2.LiveKitTokenResponse(token=token, ws_url=ws_url)
 
     def _call_to_proto(self, call: Call) -> mess_pb2.CallInfo:
         started_ts = Timestamp()

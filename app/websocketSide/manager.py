@@ -41,19 +41,18 @@ class ConnectionManager:
         targets = self._connections.get(user_id)
         if not targets:
             return False
-
-        dead: list[WebSocket] = []
-        for ws in targets:
+        dead = []
+        # ❗️ Итерируемся по копии множества
+        for ws in list(targets):
             try:
                 await ws.send_json(payload)
             except Exception:
                 dead.append(ws)
-
         for ws in dead:
             targets.discard(ws)
-
         if not targets:
             self._connections.pop(user_id, None)
+        return bool(targets)
 
         return bool(targets)
 

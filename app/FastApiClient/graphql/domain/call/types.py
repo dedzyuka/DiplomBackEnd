@@ -31,3 +31,8 @@ class EndCallInput:
 @strawberry.input
 class GetLiveKitTokenInput:
     call_id: str
+
+@strawberry.type
+class LiveKitTokenResult:
+    token: str
+    ws_url: str

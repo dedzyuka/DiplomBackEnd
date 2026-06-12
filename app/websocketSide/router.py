@@ -119,6 +119,7 @@ async def _validate_origin(websocket: WebSocket) -> bool:
     return origin in settings.ALLOWED_ORIGINS
 
 async def handle_redis_event(app, raw_data: str):
+    print(f"📡 Redis event received: {raw_data}")
     try:
         data = json.loads(raw_data)
         event_type = data.get("event")

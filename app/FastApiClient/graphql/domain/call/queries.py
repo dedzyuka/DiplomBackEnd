@@ -2,20 +2,17 @@ import anyio
 import strawberry
 from typing import List
 from FastApiClient.graphql.context import GraphQLContext
-from .types import CallInfo
+from .types import CallInfo, LiveKitTokenResult
 
 @strawberry.type
 class CallQueries:
     @strawberry.field
-    async def getLiveKitToken(self, call_id: str, info: strawberry.Info[GraphQLContext]) -> str:
+    async def get_live_kit_token(self, call_id: str, info: strawberry.Info[GraphQLContext]) -> LiveKitTokenResult:
         access_token = info.context.require_access_token()
         def _call():
-            return info.context.call_client.get_livekit_token(
-                call_id=call_id,
-                access_token=access_token,
-            )
-        response = await anyio.to_thread.run_sync(_call)
-        return response.token
+            resp = info.context.call_client.get_livekit_token(call_id=call_id, access_token=access_token)
+            return LiveKitTokenResult(token=resp.token, ws_url=resp.ws_url)
+        return await anyio.to_thread.run_sync(_call)
     @strawberry.field
     async def get_call(self, info: strawberry.Info[GraphQLContext], call_id: str) -> CallInfo:
         access_token = info.context.require_access_token()

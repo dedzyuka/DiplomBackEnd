@@ -19,28 +19,18 @@ services:
     image: livekit/livekit-server:latest
     container_name: livekit
     restart: unless-stopped
+    ports:
+      - "7880:7880"
+      - "7881-7889:7881-7889/udp"
+      - "7882:7882/tcp"
     environment:
       LIVEKIT_KEYS: "api-key: mysecretkey123456789012345678901234"
       LIVEKIT_RTC_PORT: 7880
       LIVEKIT_RTC_UDP_PORT: 7881-7889
-      LIVEKIT_RTC_TCP_PORT: 7881
-    ports:
-      - "7880:7880"
-      - "7881-7889:7881-7889/udp"
-      - "7881:7881/tcp"
-    volumes:
-      - livekit_data:/tmp/livekit
-
-  coturn:
-    image: instrumentisto/coturn
-    container_name: coturn
-    network_mode: host
-    restart: unless-stopped
-    environment:
-      - TURN_PORT=3478
-      - TURN_EXTRA_CONFIG=lt-cred-mech
-      - TURN_USER=user:pass
+      LIVEKIT_RTC_TCP_PORT: 7882
+      LIVEKIT_RTC_USE_EXTERNAL_IP: "true"
+      LIVEKIT_RTC_ICE_SERVERS: "stun:stun.l.google.com:19302"
+      # TURN убраны
 
 volumes:
-  livekit_data:
   minio_data:
