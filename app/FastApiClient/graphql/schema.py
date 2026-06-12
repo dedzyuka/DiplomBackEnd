@@ -8,12 +8,11 @@ from FastApiClient.graphql.domain.chat.queries import ChatQueries
 from FastApiClient.graphql.domain.chat.mutations import ChatMutations
 from FastApiClient.graphql.domain.message.queries import MessageQueries
 from FastApiClient.graphql.domain.message.mutations import MessageMutations
-
 from FastApiClient.graphql.domain.contact.queries import ContactQueries
 from FastApiClient.graphql.domain.contact.mutations import ContactMutations
-
 from FastApiClient.graphql.domain.call.queries import CallQueries
 from FastApiClient.graphql.domain.call.mutations import CallMutations
+from FastApiClient.graphql.domain.translation.mutation import TranslationMutations
 
 
 @strawberry.type
@@ -25,6 +24,7 @@ class Query:
     contact: ContactQueries = strawberry.field(resolver=lambda: ContactQueries())
     call: CallQueries = strawberry.field(resolver=lambda: CallQueries())
 
+
 @strawberry.type
 class Mutation:
     user: UserMutations = strawberry.field(resolver=lambda: UserMutations())
@@ -33,5 +33,7 @@ class Mutation:
     message: MessageMutations = strawberry.field(resolver=lambda: MessageMutations())
     contact: ContactMutations = strawberry.field(resolver=lambda: ContactMutations())
     call: CallMutations = strawberry.field(resolver=lambda: CallMutations())
+    translation: TranslationMutations = strawberry.field(resolver=lambda: TranslationMutations())
+
 
 schema = strawberry.Schema(query=Query, mutation=Mutation)

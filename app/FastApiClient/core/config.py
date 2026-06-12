@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # Redis session store
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_PREFIX: str = "messenger"
+    TRANSLATION_PROVIDER: str="mymemory"
+    TRANSLATION_PROVIDER_URL : str ="https://api.mymemory.translated.net/get"
+    TRANSLATION_MAX_TEXT_LENGTH:int=5000
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
