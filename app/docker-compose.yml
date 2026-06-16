@@ -1,0 +1,227 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: socketup-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: messengerdbdip
+      POSTGRES_USER: bodya11
+      POSTGRES_PASSWORD: bodya11
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bodya11 -d messengerdbdip"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks:
+      - messenger_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: socketup-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+    networks:
+      - messenger_net
+
+  minio:
+    image: minio/minio:latest
+    container_name: socketup-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks:
+      - messenger_net
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: socketup-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb -p local/messenger || true &&
+      mc anonymous set private local/messenger || true
+      "
+    restart: "no"
+    networks:
+      - messenger_net
+
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: socketup-livekit
+    restart: unless-stopped
+    command: ["--config", "/etc/livekit.yaml"]
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "50000-50100:50000-50100/udp"
+    networks:
+      - messenger_net
+
+  grpc:
+    build:
+      context: ./grpcServ
+      dockerfile: Dockerfile
+    container_name: socketup-grpc
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      livekit:
+        condition: service_started
+    environment:
+      PYTHONPATH: /app:/app/app
+      POSTGRES_DB: messengerdbdip
+      POSTGRES_USER: bodya11
+      POSTGRES_PASSWORD: bodya11
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      DATABASE_URL: postgresql+asyncpg://bodya11:bodya11@postgres:5432/messengerdbdip
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_SECURE: "false"
+      MINIO_BUCKET: messenger
+      LIVEKIT_URL: ws://livekit:7880
+      LIVEKIT_WS_URL: ws://192.168.100.247:7880
+      LIVEKIT_API_KEY: api-key
+      LIVEKIT_API_SECRET: mysecretkey123456789012345678901234
+    ports:
+      - "50051:50051"
+      - "50052:50052"
+      - "50053:50053"
+      - "50054:50054"
+      - "50055:50055"
+      - "50056:50056"
+      - "50057:50057"
+    networks:
+      - messenger_net
+    command: sh -c "python init_db.py && python app/main.py"
+
+  gateway:
+    image: python:3.12-slim
+    container_name: socketup-gateway
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - .:/app
+    depends_on:
+      grpc:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app:/app/FastApiClient
+      USER_GRPC_SERVER: grpc:50051
+      AUTH_GRPC_SERVER: grpc:50052
+      CHAT_GRPC_SERVER: grpc:50053
+      ATTACHMENT_GRPC_SERVER: grpc:50056
+      CALL_GRPC_SERVER: grpc:50057
+      REDIS_URL: redis://redis:6379/0
+      REDIS_PREFIX: messenger
+      SECRET_KEY: change-me-in-production
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 15
+      REFRESH_TOKEN_EXPIRE_DAYS: 7
+      JWT_ISSUER: messenger-backend
+      JWT_AUDIENCE: messenger-clients
+      DATABASE_URL: postgresql+asyncpg://bodya11:bodya11@postgres:5432/messengerdbdip
+    command: >
+      sh -c "
+      apt-get update &&
+      apt-get install -y --no-install-recommends build-essential curl libpq-dev ffmpeg &&
+      rm -rf /var/lib/apt/lists/* &&
+      pip install --no-cache-dir fastapi uvicorn[standard] grpcio grpcio-tools redis sqlalchemy asyncpg pydantic pydantic-settings python-jose[cryptography] passlib[bcrypt] anyio strawberry-graphql httpx python-multipart websocket-client aiohttp &&
+      uvicorn FastApiClient.main:app --host 0.0.0.0 --port 8002
+      "
+    ports:
+      - "8002:8002"
+    networks:
+      - messenger_net
+
+  websocket:
+    image: python:3.12-slim
+    container_name: socketup-websocket
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - .:/app
+    depends_on:
+      grpc:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    environment:
+      DEBUG: "true"
+      ALLOWED_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000","http://localhost:8000","http://127.0.0.1:8000","http://localhost:8002","http://127.0.0.1:8002"]'
+      USER_GRPC_SERVER: grpc:50051
+      AUTH_GRPC_SERVER: grpc:50052
+      CHAT_GRPC_SERVER: grpc:50054
+      CALL_GRPC_SERVER: grpc:50057
+      REDIS_URL: redis://redis:6379/0
+      REDIS_PREFIX: messenger
+      REDIS_EVENTS_CHANNEL: messenger:events
+      SECRET_KEY: change-me-in-production
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 15
+      REFRESH_TOKEN_EXPIRE_DAYS: 7
+      JWT_ISSUER: messenger-backend
+      JWT_AUDIENCE: messenger-clients
+      PYTHONPATH: /app/websocketSide:/app
+    command: >
+      sh -c "
+      apt-get update &&
+      apt-get install -y --no-install-recommends build-essential curl libpq-dev ffmpeg &&
+      rm -rf /var/lib/apt/lists/* &&
+      pip install --no-cache-dir fastapi uvicorn[standard] grpcio grpcio-tools redis sqlalchemy asyncpg pydantic pydantic-settings python-jose[cryptography] passlib[bcrypt] anyio websocket-client &&
+      uvicorn websocketSide.main:app --host 0.0.0.0 --port 8000
+      "
+    ports:
+      - "8000:8000"
+    networks:
+      - messenger_net
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+
+networks:
+  messenger_net:
+    driver: bridge

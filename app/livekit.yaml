@@ -1,13 +1,10 @@
 port: 7880
+
 rtc:
-  udp_port: 7881
-  tcp_port: 7882
-  use_external_ip: true
-  ice_servers:
-    - urls:
-        - stun:stun.l.google.com:19302
-    - urls:
-        - turn:37.215.43.172:7881?transport=udp
-        - turn:37.215.43.172:7882?transport=tcp
-      username: "livekit"
-      credential: "mysecretkey123456789012345678901234"
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  use_external_ip: false
+
+keys:
+  api-key: "mysecretkey123456789012345678901234"

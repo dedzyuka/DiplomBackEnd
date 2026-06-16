@@ -362,7 +362,7 @@ class CallServicer(mess_pb2_grpc.CallServiceServicer):
         token, ws_url = await self._generate_participant_token(call.livekit_room_name, str(user_uuid))
         # Гарантируем, что ws_url не None
         if not ws_url:
-            ws_url = settings.LIVEKIT_WS_URL or "ws://localhost:7880"
+            ws_url = settings.LIVEKIT_WS_URL or "ws://192.168.100.247:7880"
         
         return mess_pb2.LiveKitTokenResponse(token=token, ws_url=ws_url)
 

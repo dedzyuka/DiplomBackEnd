@@ -8,7 +8,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime
 import uuid
-from database import Base
+from app.database import Base
 from services.enums import (
     ChatType, MemberRole, MemberStatus, MessageType,
     ContactStatus, AccountStatus, PrivacyLevel
@@ -395,7 +395,6 @@ class Emoji(Base):
     __tablename__ = "emoji"
     __table_args__ = (
         Index("idx_emoji_keywords", "keywords", postgresql_using="gin"),
-        Index("idx_emoji_name_trgm", "name", postgresql_using="gin"),
     )
 
     emoji_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

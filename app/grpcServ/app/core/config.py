@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     MINIO_BUCKET: str = "messenger"
 
     # Добавленные поля для видеозвонков:
-    LIVEKIT_URL: str = "http://localhost:7880"
+    LIVEKIT_URL: str = "http://livekit:7880"
     LIVEKIT_WS_URL: str = "ws://192.168.100.247:7880" 
     LIVEKIT_API_KEY: str = "api-key"
     LIVEKIT_API_SECRET: str = "mysecretkey123456789012345678901234"

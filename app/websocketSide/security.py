@@ -5,7 +5,7 @@ from uuid import uuid4
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
-from config import settings
+from websocketSide.config import settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 

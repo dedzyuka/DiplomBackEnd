@@ -1,62 +1,81 @@
-# app/websocketSide/main.py
+from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
-import logging
 
-from fastapi import FastAPI, logger
-from fastapi.middleware.cors import CORSMiddleware
 import grpc
-import websocket  # обычный синхронный grpc
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-from config import settings
+from protobuf import mess_pb2_grpc
 from redis_c import RedisClient
 from router import handle_redis_event, router as websocket_router
-from manager import manager
-from protobuf import mess_pb2_grpc
+from websocketSide.config import settings
 
 logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting WebSocket service")
 
-    # Redis клиент
-    redis_client = RedisClient()
+    redis_client = RedisClient(settings.REDIS_URL)
     await redis_client.create()
-    app.state.redis_client = redis_client
+    app.state.redisclient = redis_client
 
-    # gRPC канал для MessageService
-    channel = grpc.insecure_channel(settings.CHAT_GRPC_SERVER)
-    message_stub = mess_pb2_grpc.MessageServiceStub(channel)
-    call_channel = grpc.insecure_channel(settings.CALL_GRPC_SERVER)  # например localhost:50057
+    message_channel = grpc.insecure_channel(settings.MESSAGE_GRPC_SERVER)
+    message_stub = mess_pb2_grpc.MessageServiceStub(message_channel)
+
+    call_channel = grpc.insecure_channel(settings.CALL_GRPC_SERVER)
     call_stub = mess_pb2_grpc.CallServiceStub(call_channel)
-    app.state.call_stub = call_stub
-    app.state.message_stub = message_stub
+
+    app.state.messagestub = message_stub
+    app.state.callstub = call_stub
+
     if redis_client is None or redis_client.client is None:
         logger.error("Redis client not initialized")
-        await websocket.close()
-        return
-    # Подписка на события Redis
-    pubsub = redis_client.client.pubsub()          # <- Убрали await
-    await pubsub.subscribe(settings.REDIS_EVENTS_CHANNEL)  # <- await здесь
-    app.state.redis_pubsub = pubsub
+        raise RuntimeError("Redis client not initialized")
+
+    pubsub = redis_client.client.pubsub()
+    await pubsub.subscribe(settings.REDIS_EVENTS_CHANNEL)
+    app.state.redispubsub = pubsub
 
     async def event_listener():
-        async for message in pubsub.listen():
-            if message["type"] == "message":
-                await handle_redis_event(app, message["data"])
+        try:
+            while True:
+                try:
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True,
+                        timeout=1.0,
+                    )
+                    if message and message.get("type") == "message":
+                        logger.info("Redis event received: %s", message["data"])
+                        await handle_redis_event(app, message["data"])
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error("Pubsub polling error: %s", str(e), exc_info=True)
+                    await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            logger.info("Event listener task cancelled")
 
-    asyncio.create_task(event_listener())
+    listener_task = asyncio.create_task(event_listener())
 
-    yield
-
-    # Cleanup
-    channel.close()
-    await redis_client.close()
-    logger.info("WebSocket service stopped")
-
+    try:
+        yield
+    finally:
+        listener_task.cancel()
+        try:
+            await listener_task
+        except asyncio.CancelledError:
+            pass
+        await pubsub.close()
+        message_channel.close()
+        call_channel.close()
+        await redis_client.close()
+        logger.info("WebSocket service stopped")
 
 
 app = FastAPI(
@@ -66,14 +85,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(websocket_router)
 
+app.include_router(websocket_router)
 
 
 @app.get("/")
@@ -84,10 +106,9 @@ async def root():
         "ws_endpoint": "ws://localhost:8000/ws/chat",
     }
 
+
 @app.get("/ws-info")
 async def websocket_info():
     return {
-        "online_users_count": manager.online_users_count,
-        "online_users": manager.get_online_users(),
         "server_time": datetime.utcnow().isoformat(),
     }
