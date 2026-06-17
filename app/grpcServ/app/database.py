@@ -7,6 +7,10 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://bodya11:bodya11@postgres:5432/messengerdbdip"
 )
 
-engine = create_async_engine(DATABASE_URL, echo=True)
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=True,
+    pool_pre_ping=True,
+)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 Base = declarative_base()

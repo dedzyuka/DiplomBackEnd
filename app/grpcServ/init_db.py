@@ -1,8 +1,8 @@
 import asyncio
 from sqlalchemy import text
 
-from app.database import engine, Base
-from app.services import models
+from app.database import engine
+from app.services.models import Base
 
 async def main():
     async with engine.begin() as conn:

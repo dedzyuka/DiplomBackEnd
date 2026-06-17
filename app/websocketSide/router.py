@@ -20,7 +20,7 @@ from config import settings
 from database import AsyncSessionLocal
 from enums import MemberStatus as DbMemberStatus
 from manager import manager
-from models import ChatMember, User
+from models import ChatMembers as ChatMember, Users as User
 from protobuf import mess_pb2, mess_pb2_grpc
 from redis_c import OfflineMessage, RedisClient
 

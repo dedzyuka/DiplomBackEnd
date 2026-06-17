@@ -7,7 +7,7 @@ import uuid
 
 from FastApiClient.database import AsyncSessionLocal
 from FastApiClient.core.session_auth import verify_access_session
-from FastApiClient.models import User
+from FastApiClient.models import Users as User
 from FastApiClient.enums import AccountStatus
 
 

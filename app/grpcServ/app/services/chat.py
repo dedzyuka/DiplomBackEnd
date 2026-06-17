@@ -11,7 +11,7 @@ from services.redis_client import redis_client
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
 from services.access_session import require_current_user_uuid
-from services.models import Chat, User, ChatMember, Message, Attachment
+from services.models import Chats as Chat, Users as User, ChatMembers as ChatMember, Messages as Message, Attachments as Attachment
 from services.enums import (
     ChatType as DbChatType,
     MemberRole as DbMemberRole,

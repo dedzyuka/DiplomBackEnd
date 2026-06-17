@@ -9,7 +9,7 @@ from app.FastApiClient.core.security import (
     verify_token, verify_password
 )
 from app.FastApiClient.schemas import LoginRequest, RegisterRequest, Token, RefreshRequest, SessionInfo
-from app.FastApiClient.models import User, SessionEvent
+from app.FastApiClient.models import Users as User, SessionEvents as SessionEvent
 from app.FastApiClient.crud.users import get_user_by_id, get_user_by_login, create_user
 from app.FastApiClient.enums import AccountStatus
 

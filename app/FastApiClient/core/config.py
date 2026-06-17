@@ -24,7 +24,10 @@ class Settings(BaseSettings):
     TRANSLATION_PROVIDER_URL: str = "https://api.mymemory.translated.net/get"
     TRANSLATION_MAX_TEXT_LENGTH: int = 5000
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    MINIOPUBLICURL: str = "http://minio:9000"
+    MINIOBUCKET: str = "messenger"
+
+    model_config = SettingsConfigDict(env_file=".env.docker", extra="ignore")
 
 
 settings = Settings()

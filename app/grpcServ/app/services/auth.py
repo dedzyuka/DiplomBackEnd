@@ -13,7 +13,7 @@ from protobuf import mess_pb2, mess_pb2_grpc
 from services.redis_client import redis_client
 from security.NewPass import CreatePass
 from services.converters.userConverter import db_user_to_proto
-from services.models import User,SessionEvent
+from services.models import Users as User,SessionEvents as SessionEvent
 
 from google.protobuf.timestamp_pb2 import Timestamp
 from services.access_session import resolve_access_session

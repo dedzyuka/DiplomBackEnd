@@ -1,5 +1,5 @@
 Generated from: /Users/bogdansakhno/Desktop/RabitmqTest
-Total .py files (git tracked, excluding alembic): 104
+Total .py files (git tracked, excluding alembic): 107
 
 ===== 1.py =====
 from jose import jwt
@@ -2596,6 +2596,112 @@ def from_grpc_message(grpc_msg: mess_pb2.Message, current_user_id: str) -> Graph
         forwarded_from_user_id=grpc_msg.forwarded_from_user_id if grpc_msg.HasField("forwarded_from_user_id") else None,  # ДОБАВЛЕНО
         forwarded_from_nickname=grpc_msg.forwarded_from_nickname if grpc_msg.HasField("forwarded_from_nickname") else None,  # ДОБАВЛЕНО
     )
+
+===== app/FastApiClient/graphql/domain/translation/mutation.py =====
+# app/FastApiClient/graphql/domain/translation/mutation.py
+import strawberry
+from FastApiClient.graphql.context import GraphQLContext
+from FastApiClient.core.config import settings
+from FastApiClient.graphql.domain.translation.service import translate_text
+from .types import TranslateInput, TranslatePayload
+
+@strawberry.type
+class TranslationMutations:
+    @strawberry.mutation
+    async def translate(
+        self,
+        info: strawberry.Info[GraphQLContext],
+        input: TranslateInput,
+    ) -> TranslatePayload:
+        source = (input.source_language or "").strip().lower()
+        target = input.target_language.strip().lower()
+        text = input.text.strip()
+
+        if not text:
+            raise ValueError("Text must not be empty")
+        if len(text) > settings.TRANSLATION_MAX_TEXT_LENGTH:
+            raise ValueError("Text too long")
+        if not source:
+            raise ValueError("sourceLanguage is required")
+        if source == target:
+            raise ValueError("sourceLanguage and targetLanguage must differ")
+
+        translated_text = await translate_text(
+            text=text,
+            source_language=source,
+            target_language=target,
+        )
+
+        return TranslatePayload(
+            original_text=text,
+            translated_text=translated_text,
+            source_language=source,
+            target_language=target,
+            provider=settings.TRANSLATION_PROVIDER,
+            is_ephemeral=True,
+        )
+
+===== app/FastApiClient/graphql/domain/translation/service.py =====
+# app/FastApiClient/services/translation.py
+from urllib.parse import urlencode
+import httpx
+
+from FastApiClient.core.config import settings
+
+
+class TranslationError(Exception):
+    pass
+
+
+async def translate_text(
+    *,
+    text: str,
+    source_language: str,
+    target_language: str,
+) -> str:
+    params = {
+        "q": text,
+        "langpair": f"{source_language}|{target_language}",
+    }
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.get(
+            settings.TRANSLATION_PROVIDER_URL,
+            params=params,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    translated = (
+        data.get("responseData", {})
+        .get("translatedText", "")
+        .strip()
+    )
+
+    if not translated:
+        raise TranslationError("Translation provider returned empty text")
+
+    return translated
+
+===== app/FastApiClient/graphql/domain/translation/types.py =====
+# app/FastApiClient/graphql/domain/translation/types.py
+from typing import Optional
+import strawberry
+
+@strawberry.input(name="TranslateTextInput")
+class TranslateInput:
+    text: str
+    target_language: str
+    source_language: Optional[str] = None
+
+@strawberry.type
+class TranslatePayload:
+    original_text: str
+    translated_text: str
+    source_language: str
+    target_language: str
+    provider: str
+    is_ephemeral: bool
 
 ===== app/FastApiClient/graphql/domain/user/mutations.py =====
 import strawberry

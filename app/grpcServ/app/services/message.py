@@ -10,7 +10,11 @@ from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
 from services.access_session import require_current_user_uuid
 from services.enums import MemberRole, MemberStatus
-from services.models import Attachment, Chat, ChatMember, Message, MessageStatus, Reaction
+from services.models import Attachments, Chats as Chat
+from services.models import ChatMembers as ChatMember
+from services.models import Messages as Message
+from services.models import MessageStatuses as MessageStatus
+from services.models import Reactions as Reaction
 from services.redis_client import redis_client
 from core.config import settings
 from google.protobuf.timestamp_pb2 import Timestamp
@@ -40,7 +44,7 @@ def _dt_to_ts(dt: datetime) -> Timestamp:
 
 
 class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
-    def _attachment_to_proto(self, attachment: Attachment) -> mess_pb2.Attachment:
+    def _attachment_to_proto(self, attachment: Attachments) -> mess_pb2.Attachment:
         pb = mess_pb2.Attachment(
             attachment_id=str(attachment.attachment_id),
             message_id=attachment.message_id or 0,
@@ -147,6 +151,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                 reply_to_id=request.reply_to_id if request.HasField("reply_to_id") else None,
                 forwarded_from_user_id=request.forwarded_from_user_id if request.HasField("forwarded_from_user_id") else None,
                 forwarded_from_nickname=request.forwarded_from_nickname if request.HasField("forwarded_from_nickname") else None,
+                is_edited=False,
                 created_at=now,
                 updated_at=now,
             )
@@ -156,7 +161,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             for att in request.attachments:
                 if att.HasField("attachment_id"):
                     att_id = uuid.UUID(att.attachment_id)
-                    stmt = select(Attachment).where(Attachment.attachment_id == att_id)
+                    stmt = select(Attachments).where(Attachments.attachment_id == att_id)
                     original = (await session.execute(stmt)).scalar_one_or_none()
                     if not original:
                         continue
@@ -168,7 +173,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
                         session.add(original)
                     else:
                         # Пересылаемое вложение – создаём копию
-                        new_attachment = Attachment(
+                        new_attachment = Attachments(
                             attachment_id=uuid.uuid4(),
                             message_id=msg.message_id,
                             message_created_at=msg.created_at,
@@ -183,7 +188,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
 
             # --- УСТАНОВКА IS_CIRCULAR ИЗ ЗАПРОСА ---
             if request.HasField("is_circular") and request.is_circular:
-                stmt_attachments = select(Attachment).where(Attachment.message_id == msg.message_id)
+                stmt_attachments = select(Attachments).where(Attachments.message_id == msg.message_id)
                 attachments_to_update = (await session.execute(stmt_attachments)).scalars().all()
                 for att in attachments_to_update:
                     att.is_circular = request.is_circular
@@ -226,7 +231,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             pb = self._message_to_proto(msg, statuses)
 
             # Загружаем вложения (включая только что созданные)
-            attachments_stmt = select(Attachment).where(Attachment.message_id == msg.message_id)
+            attachments_stmt = select(Attachments).where(Attachments.message_id == msg.message_id)
             attachments = (await session.execute(attachments_stmt)).scalars().all()
             for att in attachments:
                 pb.attachments.append(self._attachment_to_proto(att))
@@ -299,7 +304,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             pb = self._message_to_proto(msg, statuses)
 
             # Добавляем вложения
-            attachments_stmt = select(Attachment).where(Attachment.message_id == msg.message_id)
+            attachments_stmt = select(Attachments).where(Attachments.message_id == msg.message_id)
             attachments = (await session.execute(attachments_stmt)).scalars().all()
             for att in attachments:
                 pb.attachments.append(self._attachment_to_proto(att))
@@ -346,7 +351,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             # Загружаем attachments для всех сообщений
             if messages:
                 msg_ids = [m.message_id for m in messages]
-                attachments_stmt = select(Attachment).where(Attachment.message_id.in_(msg_ids))
+                attachments_stmt = select(Attachments).where(Attachments.message_id.in_(msg_ids))
                 attachments_result = await session.execute(attachments_stmt)
                 attachments = attachments_result.scalars().all()
                 # Группируем по message_id
@@ -426,7 +431,7 @@ class MessageServicer(mess_pb2_grpc.MessageServiceServicer):
             pb = self._message_to_proto(msg, statuses)
 
             # Добавляем вложения
-            attachments_stmt = select(Attachment).where(Attachment.message_id == msg.message_id)
+            attachments_stmt = select(Attachments).where(Attachments.message_id == msg.message_id)
             attachments = (await session.execute(attachments_stmt)).scalars().all()
             for att in attachments:
                 pb.attachments.append(self._attachment_to_proto(att))

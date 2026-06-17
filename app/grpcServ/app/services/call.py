@@ -16,7 +16,7 @@ from core.config import settings
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
 from services.access_session import require_current_user_uuid
-from services.models import Call, CallParticipant, ChatMember, DeviceToken
+from services.models import Calls as Call, CallParticipants as CallParticipant, ChatMembers as ChatMember, DeviceTokens as DeviceToken
 from services.enums import MemberStatus
 from services.redis_client import redis_client
 from livekit import api

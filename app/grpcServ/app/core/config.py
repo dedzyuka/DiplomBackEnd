@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     JWT_AUDIENCE: str = "messenger-clients"
     REDIS_EVENTS_CHANNEL: str = "messenger:events"
 
-    MINIO_ENDPOINT: str = "localhost:9000"
+    MINIO_ENDPOINT: str = "minio:9000"
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
     MINIO_SECURE: bool = False

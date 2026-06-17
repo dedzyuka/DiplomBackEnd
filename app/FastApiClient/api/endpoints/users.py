@@ -5,7 +5,7 @@ from uuid import UUID
 from app.FastApiClient.dependencies import get_db, get_current_user, PaginationParams
 from app.FastApiClient.enums import AccountStatus
 from app.FastApiClient.schemas import UserResponse, UserUpdate
-from app.FastApiClient.models import User
+from app.FastApiClient.models import Users as User
 from app.FastApiClient.crud import users as crud
 
 router = APIRouter(prefix="/users", tags=["Users"])

@@ -5,7 +5,7 @@ from uuid import UUID
 from datetime import datetime, timezone
 
 from FastApiClient.dependencies import get_db, get_current_user
-from FastApiClient.models import User, DeviceToken
+from FastApiClient.models import Users as User, DeviceTokens as DeviceToken
 
 router = APIRouter(prefix="/push", tags=["Push"])
 

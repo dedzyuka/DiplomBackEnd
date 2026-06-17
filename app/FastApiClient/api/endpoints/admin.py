@@ -5,7 +5,7 @@ from typing import List
 
 from app.FastApiClient.dependencies import get_db, get_current_user, PaginationParams
 from app.FastApiClient.schemas import UserResponse, AuditLogOut
-from app.FastApiClient.models import User
+from app.FastApiClient.models import Users as User
 from app.FastApiClient.crud import admin as admin_crud
 
 router = APIRouter(prefix="/admin", tags=["Admin"])

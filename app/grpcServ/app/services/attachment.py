@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from database import AsyncSessionLocal
 from protobuf import mess_pb2, mess_pb2_grpc
 from services.minio_client import MinioClient
-from services.models import Attachment
+from services.models import Attachments as Attachment
 from services.access_session import require_current_user_uuid
 
 minio_client = MinioClient()

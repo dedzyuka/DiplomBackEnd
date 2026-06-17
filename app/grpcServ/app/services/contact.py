@@ -13,7 +13,7 @@ from protobuf import mess_pb2, mess_pb2_grpc
 from services.access_session import require_current_user_id
 from services.enums import AccountStatus as DbAccountStatus
 from services.enums import ContactStatus as DbContactStatus
-from services.models import Contact, User
+from services.models import Contacts as Contact, Users as User
 from services.converters.userConverter import db_user_to_proto
 
 

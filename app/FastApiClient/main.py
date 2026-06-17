@@ -24,6 +24,7 @@ from FastApiClient.api.endpoints import upload
 from FastApiClient.api.endpoints.push import router as push_router
 import httpx
 from fastapi import Response
+from FastApiClient.core.config import settings
 
 
 app = FastAPI(title="FastAPI + GraphQL + gRPC (nested groups)")
@@ -45,29 +46,24 @@ async def root():
 
 @app.get("/media/{path:path}")
 async def get_media(request: Request, path: str):
-    # Формируем URL к MinIO (используйте ваш актуальный endpoint и bucket)
-    minio_url = f"http://localhost:9000/messenger/{path}"
-    
-    # Передаём Range заголовок, если он есть
+    minio_url = f"{settings.MINIOPUBLICURL}/{settings.MINIOBUCKET}/{path}"
     headers = {}
-    if range_header := request.headers.get("range"):
+    range_header = request.headers.get("range")
+    if range_header:
         headers["Range"] = range_header
 
     async with httpx.AsyncClient() as client:
-        # Отправляем запрос в MinIO
         resp = await client.get(minio_url, headers=headers, follow_redirects=True)
-        
         if resp.status_code == 404:
             raise HTTPException(status_code=404, detail="File not found")
-        
-        # Возвращаем потоково (чанками) с правильными заголовками
-        return StreamingResponse(
-            resp.aiter_bytes(),  # асинхронный генератор чанков
-            status_code=resp.status_code,
-            headers={
-                "Content-Type": resp.headers.get("content-type", "video/mp4"),
-                "Content-Length": resp.headers.get("content-length", ""),
-                "Accept-Ranges": "bytes",
-                "Content-Range": resp.headers.get("content-range", ""),
-            }
-        )
+
+    return StreamingResponse(
+        resp.aiter_bytes(),
+        status_code=resp.status_code,
+        headers={
+            "Content-Type": resp.headers.get("content-type", "audio/m4a"),
+            "Content-Length": resp.headers.get("content-length", ""),
+            "Accept-Ranges": "bytes",
+            "Content-Range": resp.headers.get("content-range", ""),
+        },
+    )

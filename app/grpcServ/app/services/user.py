@@ -14,7 +14,7 @@ from services.access_session import require_current_user_id
 from services.converters.userConverter import db_user_to_proto
 from services.enums import AccountStatus as DbAccountStatus
 from services.enums import PrivacyLevel as DbPrivacyLevel
-from services.models import PrivacySetting, User
+from services.models import PrivacySettings as PrivacySetting, Users as User
 from google.protobuf.timestamp_pb2 import Timestamp
 
 
@@ -90,6 +90,11 @@ class UsersServicer(mess_pb2_grpc.UserServiceServicer):
                         phone=user_data["phone"],
                         password_hash=password_hash,
                         salt=salt,
+                        is_online=False,
+                        status=DbAccountStatus.active,
+                        email_verified=False,
+                        phone_verified=False,
+                        is_admin=False,
                     )
                     .returning(User)
                 )

@@ -4,14 +4,11 @@ from FastApiClient.core.config import settings
 from FastApiClient.protos.protobuf import mess_pb2, mess_pb2_grpc
 from FastApiClient.grpc_clients.base import BaseGrpcClient
 
+
 class AttachmentGrpcClient(BaseGrpcClient):
-    def __init__(self):
-        # AttachmentService работает на порту 50055 (см. main.py grpcServ)
-        super().__init__(settings.USER_GRPC_SERVER)  # переиспользуем порт 50051? Нет, нужно отдельный.
-        # На самом деле в grpcServ/main.py AttachmentService добавлен на порт 50056? Уточним.
-        # Для простоты используем порт 50051, где есть все сервисы (UserService тоже там).
-        # Но AttachmentService добавлен на 50056. Создадим отдельный канал.
-        self.channel = grpc.insecure_channel("localhost:50056")
+    def __init__(self) -> None:
+        super().__init__(settings.ATTACHMENT_GRPC_SERVER)
+        self.channel = grpc.insecure_channel(settings.ATTACHMENT_GRPC_SERVER)
         self.stub = mess_pb2_grpc.AttachmentServiceStub(self.channel)
 
     def _auth_metadata(self, access_token: str):

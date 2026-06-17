@@ -1,7 +1,7 @@
 from google.protobuf.timestamp_pb2 import Timestamp
 
 from protobuf import mess_pb2
-from services.models import User as DbUser
+from services.models import Users as DbUser
 
 
 _STATUS_NAME_TO_PROTO = {
